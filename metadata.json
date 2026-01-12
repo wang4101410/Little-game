@@ -1,0 +1,5 @@
+{
+  "name": "PortfoProphet AI",
+  "description": "一個智能投資儀表板，使用 Gemini 獲取市場數據，執行蒙地卡羅模擬進行價格預測，並提供可操作的投資組合建議。",
+  "requestFramePermissions": []
+}
