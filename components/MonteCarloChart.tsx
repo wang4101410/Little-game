@@ -79,7 +79,7 @@ const MonteCarloChart: React.FC<MonteCarloChartProps> = ({ simulations, currentP
               dataKey={`sim${idx}`}
               stroke={idx % 2 === 0 ? "#60a5fa" : "#3b82f6"}
               strokeWidth={1}
-              strokeOpacity={0.4}
+              strokeOpacity={0.25} // Reduced opacity for cleaner look with 50 simulations
               dot={false}
               activeDot={false}
             />

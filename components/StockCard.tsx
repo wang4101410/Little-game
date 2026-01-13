@@ -20,8 +20,8 @@ const StockCard: React.FC<StockCardProps> = ({ item, analysis, isLoading, onRemo
   // Generate Simulations on the fly if analysis exists
   const simulations = useMemo(() => {
     if (!analysis) return [];
-    // 6 months forecast (approx 126 trading days), 20 simulations
-    return runMonteCarloSimulation(analysis.currentPrice, analysis.volatility, 126, 20);
+    // 6 months forecast (approx 126 trading days), 50 simulations for better density
+    return runMonteCarloSimulation(analysis.currentPrice, analysis.volatility, 126, 50);
   }, [analysis]);
 
   const profitInfo = analysis 
