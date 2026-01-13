@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { StockAnalysis, WatchListItem, PortfolioItem } from '../types';
 import { calculateProfit, runMonteCarloSimulation } from '../utils/math';
 import MonteCarloChart from './MonteCarloChart';
-import { Trash2, RefreshCw, Plus, ChevronDown, ChevronUp, DollarSign } from 'lucide-react';
+import { Trash2, RefreshCw, Plus, ChevronDown, ChevronUp, ShoppingCart } from 'lucide-react';
 
 interface WatchListProps {
   items: WatchListItem[];
@@ -12,6 +12,7 @@ interface WatchListProps {
   onAdd: (symbol: string) => void;
   onRemove: (id: string) => void;
   onRefresh: (symbol: string) => void;
+  onBuy: (symbol: string) => void; // New prop for buying
 }
 
 const WatchListRow: React.FC<{
@@ -21,7 +22,8 @@ const WatchListRow: React.FC<{
   isLoading: boolean;
   onRemove: (id: string) => void;
   onRefresh: (symbol: string) => void;
-}> = ({ item, portfolio, analysis, isLoading, onRemove, onRefresh }) => {
+  onBuy: (symbol: string) => void;
+}> = ({ item, portfolio, analysis, isLoading, onRemove, onRefresh, onBuy }) => {
     const [isExpanded, setIsExpanded] = useState(false);
 
     // Calculate profit if user owns this stock in portfolio
@@ -30,10 +32,8 @@ const WatchListRow: React.FC<{
         ? calculateProfit(analysis.currentPrice, ownedItem.avgCost, ownedItem.shares) 
         : null;
 
-    // Generate simulations for this specific item only when expanded and analysis is available
     const simulations = useMemo(() => {
         if (!isExpanded || !analysis) return [];
-        // 6 months forecast (126 trading days), 50 simulations (Consistent with StockCard)
         return runMonteCarloSimulation(analysis.currentPrice, analysis.volatility, 126, 50);
     }, [analysis, isExpanded]);
 
@@ -52,7 +52,6 @@ const WatchListRow: React.FC<{
                         {ownedItem && <span className="text-[10px] bg-brand-700 text-brand-300 px-1.5 py-0.5 rounded border border-brand-600">已持倉</span>}
                     </div>
                     <div className="text-xs text-slate-500">{analysis?.companyName || '---'}</div>
-                    {/* Compact Profit Display in Main Row */}
                     {profitData && (
                         <div className="mt-1 text-xs flex items-center gap-1">
                             <span className="text-slate-500">損益:</span>
@@ -77,6 +76,13 @@ const WatchListRow: React.FC<{
                 <td className="px-4 py-4 text-right" onClick={(e) => e.stopPropagation()}>
                     <div className="flex justify-end gap-2">
                         <button 
+                            onClick={() => onBuy(item.symbol)}
+                            className="text-green-400 hover:text-white p-1 rounded hover:bg-green-600 transition-colors"
+                            title="購入"
+                        >
+                            <ShoppingCart size={16} />
+                        </button>
+                        <button 
                             onClick={() => onRefresh(item.symbol)}
                             disabled={isLoading}
                             className="text-brand-400 hover:text-white p-1 rounded hover:bg-brand-600"
@@ -94,14 +100,12 @@ const WatchListRow: React.FC<{
                     </div>
                 </td>
             </tr>
-            {/* Expanded Section */}
             {isExpanded && (
                 <tr className="bg-brand-800/20 animate-slide-down">
                     <td colSpan={5} className="px-4 py-3">
                         <div className="bg-blue-900/10 border border-blue-500/10 rounded-lg p-4">
                             {analysis ? (
                                 <div className="space-y-4">
-                                    {/* AI Conclusion */}
                                     <div>
                                         <p className="text-xs font-bold text-blue-400 mb-1">AI 建議:</p>
                                         <p className="text-sm text-slate-200 leading-relaxed mb-3">
@@ -112,14 +116,18 @@ const WatchListRow: React.FC<{
                                                 {analysis.aiPrediction.conclusion}
                                             </p>
                                         )}
+                                        {/* Key Levels Display */}
+                                        {analysis.aiPrediction?.keyLevels && (
+                                            <div className="mt-2 text-xs font-mono text-yellow-500 bg-yellow-900/20 inline-block px-2 py-1 rounded border border-yellow-700/30">
+                                                {analysis.aiPrediction.keyLevels}
+                                            </div>
+                                        )}
                                     </div>
 
-                                    {/* Monthly Monte Carlo Chart */}
                                     <div className="bg-brand-900/50 p-2 rounded-lg border border-brand-800">
                                          <MonteCarloChart simulations={simulations} currentPrice={analysis.currentPrice} />
                                     </div>
 
-                                    {/* Scenarios (Compact) */}
                                     {analysis.aiPrediction && (
                                         <div className="grid grid-cols-3 gap-2">
                                             <div className="bg-brand-900 p-2 rounded text-[10px] border border-brand-800">
@@ -150,7 +158,7 @@ const WatchListRow: React.FC<{
     );
 };
 
-const WatchList: React.FC<WatchListProps> = ({ items, portfolio, analyses, loadingStates, onAdd, onRemove, onRefresh }) => {
+const WatchList: React.FC<WatchListProps> = ({ items, portfolio, analyses, loadingStates, onAdd, onRemove, onRefresh, onBuy }) => {
   const [inputSymbol, setInputSymbol] = useState('');
 
   const handleAdd = (e: React.FormEvent) => {
@@ -207,6 +215,7 @@ const WatchList: React.FC<WatchListProps> = ({ items, portfolio, analyses, loadi
                         isLoading={loadingStates[item.symbol] || false}
                         onRefresh={onRefresh}
                         onRemove={onRemove}
+                        onBuy={onBuy}
                     />
                 ))
             )}

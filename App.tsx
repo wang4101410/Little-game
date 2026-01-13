@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Wallet, TrendingUp, Sparkles, LayoutDashboard, Eye, History, X, Settings, ChevronDown, ChevronUp } from 'lucide-react';
 import StockCard from './components/StockCard';
 import WatchList from './components/WatchList';
 import HistoryList from './components/HistoryList';
 import SettingsModal from './components/SettingsModal';
 import { PortfolioItem, StockAnalysis, WatchListItem, Transaction, AppSettings } from './types';
-import { analyzeStockWithGemini, getOverallPortfolioAdvice } from './services/geminiService';
+import { analyzeStockWithGemini, getOverallPortfolioAdvice, fetchRealTimePrice } from './services/geminiService';
 
 const App: React.FC = () => {
   // --- STATE ---
@@ -77,6 +77,63 @@ const App: React.FC = () => {
     }
   }, [sellPrice, sellShares, sellItem, settings.feeRate]);
 
+  // --- 10s Price Polling (Real-time update) ---
+  const isPollingRef = useRef(false);
+
+  useEffect(() => {
+    const updatePrices = async () => {
+        if (isPollingRef.current) return;
+        isPollingRef.current = true;
+
+        const allSymbols = Array.from(new Set([
+            ...portfolio.map(p => p.symbol),
+            ...watchlist.map(w => w.symbol)
+        ]));
+
+        if (allSymbols.length === 0) {
+            isPollingRef.current = false;
+            return;
+        }
+
+        // 使用 Promise.all 可能會觸發 Rate Limit，這裡改用循序執行 + 微小延遲
+        // 或者只更新當前可見頁面的股票。這裡為了簡單且遵守 10s 要求，我們嘗試更新所有。
+        for (const symbol of allSymbols) {
+            // 如果正在進行完整的 Analysis，跳過即時價格更新
+            if (loadingStates[symbol]) continue;
+
+            const newPrice = await fetchRealTimePrice(symbol);
+            if (newPrice !== null && newPrice > 0) {
+                setAnalyses(prev => {
+                    const current = prev[symbol];
+                    if (!current) return prev; // 如果還沒有基本分析資料，不更新 (因為缺其他欄位)
+                    
+                    // 更新價格與漲跌幅
+                    const newChangePercent = current.prevClose > 0 
+                        ? ((newPrice - current.prevClose) / current.prevClose) * 100 
+                        : 0;
+
+                    return {
+                        ...prev,
+                        [symbol]: {
+                            ...current,
+                            currentPrice: newPrice,
+                            changePercent: newChangePercent,
+                            lastUpdated: Date.now()
+                        }
+                    };
+                });
+            }
+            // 每次請求間隔 500ms 避免太快觸發 429
+            await new Promise(r => setTimeout(r, 500));
+        }
+        isPollingRef.current = false;
+    };
+
+    const intervalId = setInterval(updatePrices, 10000); // 10 秒更新一次
+    return () => clearInterval(intervalId);
+  }, [portfolio, watchlist, loadingStates]);
+
+
   // --- ACTIONS ---
 
   const handleAnalyze = async (symbol: string) => {
@@ -92,17 +149,24 @@ const App: React.FC = () => {
       ));
     } catch (error: any) {
       console.error(error);
-      
-      // 錯誤處理：特別針對 429 或其他網路錯誤給予使用者反饋
       if (error.message?.includes("429") || error.message?.includes("Resource has been exhausted")) {
          alert(`分析 ${symbol} 失敗：AI 請求過於頻繁 (429)。請稍等幾秒後再試。`);
       } else {
-         // 其他錯誤 (如搜尋不到、解析失敗)
          console.warn(`分析 ${symbol} 失敗:`, error.message);
       }
     } finally {
       setLoadingStates(prev => ({ ...prev, [symbol]: false }));
     }
+  };
+
+  const handleBuyFromWatchlist = (symbol: string) => {
+     setNewSymbol(symbol);
+     // 如果有分析資料，預填現價
+     const price = analyses[symbol]?.currentPrice;
+     if (price) setNewPrice(price.toString());
+     setIsAddFormOpen(true);
+     setActiveTab('portfolio'); // 切換回持倉分頁以便看到表單
+     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleAddStock = (e: React.FormEvent) => {
@@ -497,6 +561,7 @@ const App: React.FC = () => {
                     onAdd={handleAddToWatchlist}
                     onRemove={(id) => setWatchlist(prev => prev.filter(w => w.id !== id))}
                     onRefresh={handleAnalyze}
+                    onBuy={handleBuyFromWatchlist}
                 />
             </div>
         )}
