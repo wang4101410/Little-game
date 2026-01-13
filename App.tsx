@@ -473,6 +473,7 @@ const App: React.FC = () => {
             <div className="animate-fade-in">
                 <WatchList 
                     items={watchlist}
+                    portfolio={portfolio}
                     analyses={analyses}
                     loadingStates={loadingStates}
                     onAdd={handleAddToWatchlist}

@@ -1,9 +1,12 @@
-import React, { useState } from 'react';
-import { StockAnalysis, WatchListItem } from '../types';
-import { Trash2, RefreshCw, Plus, ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { StockAnalysis, WatchListItem, PortfolioItem } from '../types';
+import { calculateProfit, runMonteCarloSimulation } from '../utils/math';
+import MonteCarloChart from './MonteCarloChart';
+import { Trash2, RefreshCw, Plus, ChevronDown, ChevronUp, DollarSign } from 'lucide-react';
 
 interface WatchListProps {
   items: WatchListItem[];
+  portfolio: PortfolioItem[];
   analyses: Record<string, StockAnalysis>;
   loadingStates: Record<string, boolean>;
   onAdd: (symbol: string) => void;
@@ -11,9 +14,144 @@ interface WatchListProps {
   onRefresh: (symbol: string) => void;
 }
 
-const WatchList: React.FC<WatchListProps> = ({ items, analyses, loadingStates, onAdd, onRemove, onRefresh }) => {
+const WatchListRow: React.FC<{
+  item: WatchListItem;
+  portfolio: PortfolioItem[];
+  analysis: StockAnalysis | undefined;
+  isLoading: boolean;
+  onRemove: (id: string) => void;
+  onRefresh: (symbol: string) => void;
+}> = ({ item, portfolio, analysis, isLoading, onRemove, onRefresh }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+
+    // Calculate profit if user owns this stock in portfolio
+    const ownedItem = portfolio.find(p => p.symbol === item.symbol);
+    const profitData = ownedItem && analysis 
+        ? calculateProfit(analysis.currentPrice, ownedItem.avgCost, ownedItem.shares) 
+        : null;
+
+    // Generate simulations for this specific item only when expanded and analysis is available
+    const simulations = useMemo(() => {
+        if (!isExpanded || !analysis) return [];
+        // 6 months forecast (126 trading days), 50 simulations (Consistent with StockCard)
+        return runMonteCarloSimulation(analysis.currentPrice, analysis.volatility, 126, 50);
+    }, [analysis, isExpanded]);
+
+    const isUp = analysis && analysis.changePercent >= 0;
+
+    return (
+        <React.Fragment>
+            <tr 
+                className={`hover:bg-brand-700/30 transition-colors cursor-pointer ${isExpanded ? 'bg-brand-700/20' : ''}`}
+                onClick={() => setIsExpanded(!isExpanded)}
+            >
+                <td className="px-4 py-4">
+                    <div className="font-bold text-white flex items-center gap-2">
+                        {item.symbol}
+                        {isExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
+                        {ownedItem && <span className="text-[10px] bg-brand-700 text-brand-300 px-1.5 py-0.5 rounded border border-brand-600">已持倉</span>}
+                    </div>
+                    <div className="text-xs text-slate-500">{analysis?.companyName || '---'}</div>
+                    {/* Compact Profit Display in Main Row */}
+                    {profitData && (
+                        <div className="mt-1 text-xs flex items-center gap-1">
+                            <span className="text-slate-500">損益:</span>
+                            <span className={`font-mono ${profitData.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {profitData.profit >= 0 ? '+' : ''}{profitData.profit.toFixed(0)} ({profitData.profitPercent.toFixed(1)}%)
+                            </span>
+                        </div>
+                    )}
+                </td>
+                <td className="px-4 py-4 font-mono text-white">
+                    {analysis ? `NT$${analysis.currentPrice.toFixed(2)}` : '---'}
+                </td>
+                <td className={`px-4 py-4 font-mono font-bold ${isUp ? 'text-green-400' : 'text-red-400'}`}>
+                    {analysis ? `${isUp ? '+' : ''}${analysis.changePercent.toFixed(2)}%` : '---'}
+                </td>
+                <td className="px-4 py-4 text-slate-300 font-mono text-xs">
+                    <div className="flex flex-col">
+                        <span>EPS: <span className="text-white">{analysis?.eps || '-'}</span></span>
+                        <span>P/E: <span className="text-white">{analysis?.pe || '-'}</span></span>
+                    </div>
+                </td>
+                <td className="px-4 py-4 text-right" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex justify-end gap-2">
+                        <button 
+                            onClick={() => onRefresh(item.symbol)}
+                            disabled={isLoading}
+                            className="text-brand-400 hover:text-white p-1 rounded hover:bg-brand-600"
+                            title="更新數據"
+                        >
+                            <RefreshCw size={16} className={isLoading ? "animate-spin" : ""} />
+                        </button>
+                        <button 
+                            onClick={() => onRemove(item.id)}
+                            className="text-slate-500 hover:text-red-400 p-1 rounded hover:bg-brand-600"
+                            title="刪除"
+                        >
+                            <Trash2 size={16} />
+                        </button>
+                    </div>
+                </td>
+            </tr>
+            {/* Expanded Section */}
+            {isExpanded && (
+                <tr className="bg-brand-800/20 animate-slide-down">
+                    <td colSpan={5} className="px-4 py-3">
+                        <div className="bg-blue-900/10 border border-blue-500/10 rounded-lg p-4">
+                            {analysis ? (
+                                <div className="space-y-4">
+                                    {/* AI Conclusion */}
+                                    <div>
+                                        <p className="text-xs font-bold text-blue-400 mb-1">AI 建議:</p>
+                                        <p className="text-sm text-slate-200 leading-relaxed mb-3">
+                                            {analysis.advice}
+                                        </p>
+                                        {analysis.aiPrediction && (
+                                            <p className="text-xs text-slate-400 italic border-l-2 border-brand-600 pl-2">
+                                                {analysis.aiPrediction.conclusion}
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    {/* Monthly Monte Carlo Chart */}
+                                    <div className="bg-brand-900/50 p-2 rounded-lg border border-brand-800">
+                                         <MonteCarloChart simulations={simulations} currentPrice={analysis.currentPrice} />
+                                    </div>
+
+                                    {/* Scenarios (Compact) */}
+                                    {analysis.aiPrediction && (
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <div className="bg-brand-900 p-2 rounded text-[10px] border border-brand-800">
+                                                <span className="text-green-400 block mb-1 font-bold">樂觀</span>
+                                                <span className="text-slate-400 leading-tight block">{analysis.aiPrediction.scenarios.optimistic}</span>
+                                            </div>
+                                            <div className="bg-brand-900 p-2 rounded text-[10px] border border-brand-800">
+                                                <span className="text-slate-400 block mb-1 font-bold">中性</span>
+                                                <span className="text-slate-400 leading-tight block">{analysis.aiPrediction.scenarios.neutral}</span>
+                                            </div>
+                                            <div className="bg-brand-900 p-2 rounded text-[10px] border border-brand-800">
+                                                <span className="text-red-400 block mb-1 font-bold">悲觀</span>
+                                                <span className="text-slate-400 leading-tight block">{analysis.aiPrediction.scenarios.pessimistic}</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="text-center py-4 text-slate-500 text-sm">
+                                    尚無分析數據，請點擊更新按鈕。
+                                </div>
+                            )}
+                        </div>
+                    </td>
+                </tr>
+            )}
+        </React.Fragment>
+    );
+};
+
+const WatchList: React.FC<WatchListProps> = ({ items, portfolio, analyses, loadingStates, onAdd, onRemove, onRefresh }) => {
   const [inputSymbol, setInputSymbol] = useState('');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,10 +159,6 @@ const WatchList: React.FC<WatchListProps> = ({ items, analyses, loadingStates, o
       onAdd(inputSymbol);
       setInputSymbol('');
     }
-  };
-
-  const toggleExpand = (id: string) => {
-      setExpandedId(prev => prev === id ? null : id);
   };
 
   return (
@@ -64,96 +198,17 @@ const WatchList: React.FC<WatchListProps> = ({ items, analyses, loadingStates, o
                     </td>
                 </tr>
             ) : (
-                items.map(item => {
-                    const analysis = analyses[item.symbol];
-                    const isLoading = loadingStates[item.symbol];
-                    const isUp = analysis && analysis.changePercent >= 0;
-                    const isExpanded = expandedId === item.id;
-
-                    return (
-                        <React.Fragment key={item.id}>
-                            <tr 
-                                className={`hover:bg-brand-700/30 transition-colors cursor-pointer ${isExpanded ? 'bg-brand-700/20' : ''}`}
-                                onClick={() => toggleExpand(item.id)}
-                            >
-                                <td className="px-4 py-4">
-                                    <div className="font-bold text-white flex items-center gap-2">
-                                        {item.symbol}
-                                        {isExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
-                                    </div>
-                                    <div className="text-xs text-slate-500">{analysis?.companyName || '---'}</div>
-                                </td>
-                                <td className="px-4 py-4 font-mono text-white">
-                                    {analysis ? `NT$${analysis.currentPrice.toFixed(2)}` : '---'}
-                                </td>
-                                <td className={`px-4 py-4 font-mono font-bold ${isUp ? 'text-green-400' : 'text-red-400'}`}>
-                                    {analysis ? `${isUp ? '+' : ''}${analysis.changePercent.toFixed(2)}%` : '---'}
-                                </td>
-                                <td className="px-4 py-4 text-slate-300 font-mono text-xs">
-                                    <div className="flex flex-col">
-                                        <span>EPS: <span className="text-white">{analysis?.eps || '-'}</span></span>
-                                        <span>P/E: <span className="text-white">{analysis?.pe || '-'}</span></span>
-                                    </div>
-                                </td>
-                                <td className="px-4 py-4 text-right" onClick={(e) => e.stopPropagation()}>
-                                    <div className="flex justify-end gap-2">
-                                        <button 
-                                            onClick={() => onRefresh(item.symbol)}
-                                            disabled={isLoading}
-                                            className="text-brand-400 hover:text-white p-1 rounded hover:bg-brand-600"
-                                            title="更新數據"
-                                        >
-                                            <RefreshCw size={16} className={isLoading ? "animate-spin" : ""} />
-                                        </button>
-                                        <button 
-                                            onClick={() => onRemove(item.id)}
-                                            className="text-slate-500 hover:text-red-400 p-1 rounded hover:bg-brand-600"
-                                            title="刪除"
-                                        >
-                                            <Trash2 size={16} />
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                            {/* Expandable Section for Full Advice */}
-                            {isExpanded && (
-                                <tr className="bg-brand-800/20">
-                                    <td colSpan={5} className="px-4 py-3">
-                                        <div className="bg-blue-900/20 border border-blue-500/10 rounded-lg p-4">
-                                            {analysis?.aiPrediction ? (
-                                                <div className="space-y-2">
-                                                     <p className="text-xs font-bold text-blue-400">AI 混合模型結論:</p>
-                                                     <p className="text-sm text-slate-200 leading-relaxed">{analysis.aiPrediction.conclusion}</p>
-                                                     <div className="grid grid-cols-3 gap-2 mt-2">
-                                                         <div className="bg-brand-900 p-2 rounded text-xs">
-                                                             <span className="text-green-400 block mb-1">樂觀情境</span>
-                                                             <span className="text-slate-400">{analysis.aiPrediction.scenarios.optimistic}</span>
-                                                         </div>
-                                                         <div className="bg-brand-900 p-2 rounded text-xs">
-                                                              <span className="text-slate-400 block mb-1">中性情境</span>
-                                                              <span className="text-slate-400">{analysis.aiPrediction.scenarios.neutral}</span>
-                                                         </div>
-                                                         <div className="bg-brand-900 p-2 rounded text-xs">
-                                                              <span className="text-red-400 block mb-1">悲觀情境</span>
-                                                              <span className="text-slate-400">{analysis.aiPrediction.scenarios.pessimistic}</span>
-                                                         </div>
-                                                     </div>
-                                                </div>
-                                            ) : (
-                                                <>
-                                                    <p className="text-xs font-bold text-blue-400 mb-1">AI 建議:</p>
-                                                    <p className="text-sm text-slate-300 leading-relaxed">
-                                                        {analysis ? analysis.advice : "尚無分析數據，請點擊更新按鈕。"}
-                                                    </p>
-                                                </>
-                                            )}
-                                        </div>
-                                    </td>
-                                </tr>
-                            )}
-                        </React.Fragment>
-                    );
-                })
+                items.map(item => (
+                    <WatchListRow 
+                        key={item.id}
+                        item={item}
+                        portfolio={portfolio}
+                        analysis={analyses[item.symbol]}
+                        isLoading={loadingStates[item.symbol] || false}
+                        onRefresh={onRefresh}
+                        onRemove={onRemove}
+                    />
+                ))
             )}
           </tbody>
         </table>
