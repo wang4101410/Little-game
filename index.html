@@ -22,6 +22,11 @@
         }
       }
     </script>
+    <script>
+      // Polyfill process for browser environments to prevent "process is not defined" error
+      // This is crucial for the site to render on static hosts
+      window.process = window.process || { env: {} };
+    </script>
   <script type="importmap">
 {
   "imports": {

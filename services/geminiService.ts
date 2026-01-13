@@ -1,12 +1,23 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { StockAnalysis } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-// Using gemini-3-flash-preview for speed and search capabilities
+// Note: To secure the API key, it is retrieved from process.env.API_KEY.
+// In a deployed environment, ensure this environment variable is set in your hosting provider's backend settings.
 const MODEL_NAME = "gemini-3-flash-preview";
 
+// Helper function to initialize the AI client only when needed.
+// This prevents the app from crashing on load if the API key is missing or process.env is undefined.
+const getAiClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    console.error("API Key not found in environment variables.");
+    throw new Error("未偵測到 API Key。請確保您已在部署平台的後端環境變數 (Environment Variables) 中設定 process.env.API_KEY。");
+  }
+  return new GoogleGenAI({ apiKey });
+};
+
 export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnalysis> => {
+  const ai = getAiClient();
   const prompt = `
     請針對台灣股票代碼：${symbol} 進行深度財務分析與未來價格路徑預測 (以台幣 TWD 為基準)。
     
@@ -125,7 +136,7 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
 
   } catch (error) {
     console.error("Gemini Analysis Error:", error);
-    throw new Error(`無法分析 ${symbol}。請重試。`);
+    throw new Error(`無法分析 ${symbol}。請檢查 API Key 設定或重試。`);
   }
 };
 
@@ -150,6 +161,7 @@ export const getOverallPortfolioAdvice = async (
     `;
 
     try {
+        const ai = getAiClient();
         const response = await ai.models.generateContent({
             model: MODEL_NAME,
             contents: prompt,
@@ -159,6 +171,7 @@ export const getOverallPortfolioAdvice = async (
         });
         return response.text || "無法生成投資組合建議。";
     } catch (e) {
-        return "目前無法提供建議。";
+        console.error(e);
+        return "目前無法提供建議。請檢查 API Key 設定。";
     }
 };
