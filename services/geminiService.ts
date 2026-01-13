@@ -49,7 +49,8 @@ const getAiClient = () => {
 // 輕量級：只獲取即時價格 (用於 10秒更新)
 export const fetchRealTimePrice = async (symbol: string): Promise<number | null> => {
     const ai = getAiClient();
-    const prompt = `查詢 ${symbol} 的最新即時股價 (Price)。只回傳數字，不要有文字。例如: 102.5`;
+    // 修改 Prompt：明確要求若休市則提供收盤價
+    const prompt = `查詢 ${symbol} 的最新股價。如果是盤中，請給出即時成交價；如果是休市或收盤，請給出最後收盤價。只回傳一個數字，不要有文字。例如: 102.5`;
     
     try {
         const response = await ai.models.generateContent({
@@ -58,8 +59,8 @@ export const fetchRealTimePrice = async (symbol: string): Promise<number | null>
             config: { tools: [{ googleSearch: {} }] }
         });
         const text = response.text || "";
-        // 嘗試提取數字
-        const match = text.match(/[\d,]+\.?\d*/);
+        // 增強的正則表達式：支援逗號，並忽略前後文字
+        const match = text.match(/([\d,]+\.?\d*)/);
         if (match) {
             return parseFloat(match[0].replace(/,/g, ''));
         }
@@ -96,10 +97,10 @@ const analyzePortfolioStrategy = async (ai: GoogleGenAI, marketInfo: string, por
 // --- 個股分析管線 ---
 
 const fetchStockRawData = async (ai: GoogleGenAI, symbol: string): Promise<{ text: string, urls: string[] }> => {
-    // 優化 Prompt：強制要求數據格式
+    // 優化 Prompt：強制要求數據格式，並處理收盤情境
     const prompt = `
       [高優先級] 找出台灣股票 ${symbol} 的最新數據：
-      1. 【現價】(Current Price)：精確數字。
+      1. 【價格】(Price)：如果是盤中請給即時價，休市請給收盤價。
       2. 【昨收】(Previous Close)：精確數字。
       3. 【基本面】：本益比 (PE)、EPS。
       4. 【關鍵價位】：找出近期的「支撐位」與「壓力位」價格。

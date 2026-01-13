@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Wallet, TrendingUp, Sparkles, LayoutDashboard, Eye, History, X, Settings, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Wallet, TrendingUp, Sparkles, LayoutDashboard, Eye, History, X, Settings, ChevronDown, ChevronUp, Clock, Moon } from 'lucide-react';
 import StockCard from './components/StockCard';
 import WatchList from './components/WatchList';
 import HistoryList from './components/HistoryList';
@@ -7,9 +7,35 @@ import SettingsModal from './components/SettingsModal';
 import { PortfolioItem, StockAnalysis, WatchListItem, Transaction, AppSettings } from './types';
 import { analyzeStockWithGemini, getOverallPortfolioAdvice, fetchRealTimePrice } from './services/geminiService';
 
+// --- Helper: Check Taiwan Market Hours ---
+const getMarketStatus = () => {
+    const now = new Date();
+    // 強制轉換為台北時間物件
+    const taipeiTimeStr = now.toLocaleString("en-US", { timeZone: "Asia/Taipei" });
+    const taipeiTime = new Date(taipeiTimeStr);
+
+    const day = taipeiTime.getDay(); // 0 is Sunday, 6 is Saturday
+    const hour = taipeiTime.getHours();
+    const minute = taipeiTime.getMinutes();
+    const currentMinutes = hour * 60 + minute;
+
+    // 台股交易時間: 09:00 ~ 13:30 (預留到 13:35 抓取收盤定價)
+    const START_MIN = 9 * 60;       // 09:00
+    const END_MIN = 13 * 60 + 35;   // 13:35
+
+    const isWeekend = day === 0 || day === 6;
+    const isTradingHours = currentMinutes >= START_MIN && currentMinutes <= END_MIN;
+
+    return {
+        isOpen: !isWeekend && isTradingHours,
+        message: isWeekend ? "休市 (週末)" : (isTradingHours ? "開盤中 (即時更新)" : "休市 (收盤)")
+    };
+};
+
 const App: React.FC = () => {
   // --- STATE ---
   const [activeTab, setActiveTab] = useState<'portfolio' | 'watchlist' | 'history'>('portfolio');
+  const [marketStatus, setMarketStatus] = useState(getMarketStatus());
   
   // Settings & Cash
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -77,12 +103,22 @@ const App: React.FC = () => {
     }
   }, [sellPrice, sellShares, sellItem, settings.feeRate]);
 
-  // --- 10s Price Polling (Real-time update) ---
+  // --- Price Polling Logic ---
   const isPollingRef = useRef(false);
 
   useEffect(() => {
+    // 1. 檢查並更新市場狀態
+    const currentStatus = getMarketStatus();
+    setMarketStatus(currentStatus);
+
+    // 2. 定義更新邏輯
     const updatePrices = async () => {
+        // 防止重複執行
         if (isPollingRef.current) return;
+
+        // 若市場關閉，但這是第一次執行(或手動觸發)，我們仍需獲取一次最後價格
+        // 但若是在 Loop 中，我們會再次檢查狀態
+        
         isPollingRef.current = true;
 
         const allSymbols = Array.from(new Set([
@@ -95,19 +131,16 @@ const App: React.FC = () => {
             return;
         }
 
-        // 使用 Promise.all 可能會觸發 Rate Limit，這裡改用循序執行 + 微小延遲
-        // 或者只更新當前可見頁面的股票。這裡為了簡單且遵守 10s 要求，我們嘗試更新所有。
         for (const symbol of allSymbols) {
-            // 如果正在進行完整的 Analysis，跳過即時價格更新
+            // 若該股票正在進行完整 AI 分析，則跳過即時價格更新，避免干擾
             if (loadingStates[symbol]) continue;
 
             const newPrice = await fetchRealTimePrice(symbol);
             if (newPrice !== null && newPrice > 0) {
                 setAnalyses(prev => {
                     const current = prev[symbol];
-                    if (!current) return prev; // 如果還沒有基本分析資料，不更新 (因為缺其他欄位)
+                    if (!current) return prev; 
                     
-                    // 更新價格與漲跌幅
                     const newChangePercent = current.prevClose > 0 
                         ? ((newPrice - current.prevClose) / current.prevClose) * 100 
                         : 0;
@@ -123,15 +156,33 @@ const App: React.FC = () => {
                     };
                 });
             }
-            // 每次請求間隔 500ms 避免太快觸發 429
+            // 輕微延遲避免 Rate Limit
             await new Promise(r => setTimeout(r, 500));
         }
         isPollingRef.current = false;
     };
 
-    const intervalId = setInterval(updatePrices, 10000); // 10 秒更新一次
-    return () => clearInterval(intervalId);
-  }, [portfolio, watchlist, loadingStates]);
+    // 3. 立即執行一次 (滿足「關閉前請最後取得最新現價」以及「打開 APP 時即便休市也要有數據」的需求)
+    updatePrices();
+
+    // 4. 只有在市場「開盤中」時，才設定循環
+    if (currentStatus.isOpen) {
+        const intervalId = setInterval(() => {
+            // 每次 Loop 前再次檢查狀態，若轉為休市則會繼續執行完這次但不會有下一次(因為 Effect 依賴變了? 不，setInterval 閉包內的邏輯)
+            // 嚴謹起見，我們在 interval 內再次檢查
+            const checkStatus = getMarketStatus();
+            setMarketStatus(checkStatus);
+            
+            if (checkStatus.isOpen) {
+                updatePrices();
+            }
+        }, 10000); // 10 秒更新
+
+        return () => clearInterval(intervalId);
+    }
+    // 若休市，不設定 interval，即「結束搜尋」
+
+  }, [portfolio, watchlist, loadingStates]); 
 
 
   // --- ACTIONS ---
@@ -161,11 +212,10 @@ const App: React.FC = () => {
 
   const handleBuyFromWatchlist = (symbol: string) => {
      setNewSymbol(symbol);
-     // 如果有分析資料，預填現價
      const price = analyses[symbol]?.currentPrice;
      if (price) setNewPrice(price.toString());
      setIsAddFormOpen(true);
-     setActiveTab('portfolio'); // 切換回持倉分頁以便看到表單
+     setActiveTab('portfolio');
      window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -329,7 +379,16 @@ const App: React.FC = () => {
               <div className="bg-brand-500 p-1.5 rounded-lg">
                 <TrendingUp className="text-white" size={24} />
               </div>
-              <span className="text-xl font-bold tracking-tight text-white hidden md:block">Portfo<span className="text-brand-400">Prophet</span></span>
+              <div className="flex flex-col">
+                  <span className="text-xl font-bold tracking-tight text-white hidden md:block leading-none">
+                      Portfo<span className="text-brand-400">Prophet</span>
+                  </span>
+                  {/* Market Status Badge */}
+                  <div className="flex items-center gap-1 mt-0.5">
+                      <span className={`block w-2 h-2 rounded-full ${marketStatus.isOpen ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></span>
+                      <span className="text-[10px] text-slate-400">{marketStatus.message}</span>
+                  </div>
+              </div>
             </div>
             
             {/* Navigation Tabs */}
