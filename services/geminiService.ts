@@ -178,6 +178,38 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
             config: { 
                 responseMimeType: "application/json",
                 // 這裡不放 tools，純推理，速度快且穩定
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        symbol: { type: Type.STRING },
+                        companyName: { type: Type.STRING },
+                        marketCap: { type: Type.STRING },
+                        eps: { type: Type.STRING },
+                        pe: { type: Type.STRING },
+                        currentPrice: { type: Type.NUMBER },
+                        prevClose: { type: Type.NUMBER },
+                        volatility: { type: Type.NUMBER },
+                        advice: { type: Type.STRING },
+                        aiPrediction: {
+                            type: Type.OBJECT,
+                            properties: {
+                                trendAnalysis: { type: Type.STRING },
+                                volatilityAnalysis: { type: Type.STRING },
+                                keyLevels: { type: Type.STRING },
+                                scenarios: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        optimistic: { type: Type.STRING },
+                                        neutral: { type: Type.STRING },
+                                        pessimistic: { type: Type.STRING }
+                                    }
+                                },
+                                conclusion: { type: Type.STRING }
+                            }
+                        }
+                    },
+                    required: ["symbol", "currentPrice", "prevClose"]
+                }
             }
         });
         

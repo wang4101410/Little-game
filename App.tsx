@@ -92,12 +92,12 @@ const App: React.FC = () => {
       ));
     } catch (error: any) {
       console.error(error);
-      // 這裡簡單使用 alert 通知，讓使用者知道不是系統壞了，而是 API 限制或網路問題
-      // 在實際生產環境中，可以使用 Toast 通知
-      if (error.message.includes("429")) {
-         alert(`無法分析 ${symbol}: 請求過於頻繁，請稍等幾秒後再試。`);
+      
+      // 錯誤處理：特別針對 429 或其他網路錯誤給予使用者反饋
+      if (error.message?.includes("429") || error.message?.includes("Resource has been exhausted")) {
+         alert(`分析 ${symbol} 失敗：AI 請求過於頻繁 (429)。請稍等幾秒後再試。`);
       } else {
-         // 不干擾使用者的非關鍵錯誤，僅在 Console 顯示，除非是完全失敗
+         // 其他錯誤 (如搜尋不到、解析失敗)
          console.warn(`分析 ${symbol} 失敗:`, error.message);
       }
     } finally {
