@@ -91,8 +91,10 @@ const App: React.FC = () => {
       setPortfolio(prev => prev.map(p => 
         p.symbol === symbol ? { ...p, name: analysis.companyName } : p
       ));
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
+      // Explicitly alert the user of the error for easier debugging in deployment
+      alert(`分析失敗 (${symbol}): ${error.message || '請檢查 API Key 或網路連線'}`);
     } finally {
       setLoadingStates(prev => ({ ...prev, [symbol]: false }));
     }

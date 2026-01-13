@@ -143,9 +143,10 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
       lastUpdated: Date.now(),
     };
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini Analysis Error:", error);
-    throw error;
+    // 直接拋出錯誤，讓 App.tsx 捕捉並顯示給使用者
+    throw new Error(error.message || "分析過程中發生未知錯誤");
   }
 };
 
@@ -181,10 +182,8 @@ export const getOverallPortfolioAdvice = async (
         return response.text || "無法生成投資組合建議。";
     } catch (e: any) {
         console.error(e);
-        // 如果錯誤訊息包含 Key 相關字眼，直接回傳詳細設定指引
-        if (e.message && (e.message.includes("API Key") || e.message.includes("API_KEY"))) {
-            return e.message;
-        }
-        return "目前無法提供建議。請檢查網路連線或稍後再試。";
+        // 重要更新：不再隱藏錯誤訊息，直接回傳 Google API 的原始錯誤
+        // 這樣您在畫面上就能看到是 403 (Key錯誤), 429 (配額滿), 還是 400 (區域限制)
+        return `⚠️ 建議生成失敗: ${e.message || "未知錯誤，請檢查 API Key 設定"}`;
     }
 };
