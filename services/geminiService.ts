@@ -1,59 +1,68 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { StockAnalysis } from "../types";
 
-// Note: To secure the API key, it is retrieved from process.env.API_KEY.
-// In a deployed environment, ensure this environment variable is set in your hosting provider's backend settings.
+// 設定模型名稱
 const MODEL_NAME = "gemini-3-flash-preview";
 
-// Helper function to initialize the AI client only when needed.
-// This prevents the app from crashing on load if the API key is missing or process.env is undefined.
+// 獲取 AI 客戶端
+// 安全性說明與修復：
+// 1. 在靜態網站部署 (如 Vercel, Netlify) 中，環境變數通常不會自動暴露給瀏覽器，除非變數名稱有特定前綴 (如 VITE_)。
+// 2. 為了確保您的 API Key 能被讀取，我們增加了對 VITE_API_KEY 的檢查。
+// 3. 請在您的部署平台設定環境變數：Key 為 "VITE_API_KEY"，Value 為您的 Gemini API Key。
 const getAiClient = () => {
-  const apiKey = process.env.API_KEY;
+  // 嘗試多種來源讀取 API Key，以相容不同的構建工具 (Vite, CRA, Webpack)
+  // 使用 (import.meta as any).env 避免 TypeScript 在某些配置下的類型錯誤
+  const apiKey = 
+    (import.meta as any).env?.VITE_API_KEY || 
+    (import.meta as any).env?.API_KEY || 
+    process.env.VITE_API_KEY || 
+    process.env.API_KEY ||
+    process.env.REACT_APP_API_KEY;
+  
   if (!apiKey) {
-    console.error("API Key not found in environment variables.");
-    throw new Error("未偵測到 API Key。請確保您已在部署平台的後端環境變數 (Environment Variables) 中設定 process.env.API_KEY。");
+    throw new Error("【設定錯誤】未偵測到 API Key。\n請前往您的部署平台 (Vercel/Netlify/Cloudflare) 的後台設定：\n1. 找到 Environment Variables (環境變數)。\n2. 新增變數名稱為 'VITE_API_KEY'。\n3. 填入您的 API Key 並重新部署。");
   }
   return new GoogleGenAI({ apiKey });
 };
 
 export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnalysis> => {
-  const ai = getAiClient();
-  const prompt = `
-    請針對台灣股票代碼：${symbol} 進行深度財務分析與未來價格路徑預測 (以台幣 TWD 為基準)。
-    
-    **重要指令：所有分析內容、建議、趨勢描述與結論，請務必使用「繁體中文」回答。**
-
-    第一部分：基礎數據獲取 (使用 Google Search)
-    1. 公司完整名稱。
-    2. 目前市值 (Market Cap)。
-    3. 目前股價 (Current Price) 與 前一日收盤價 (Prev Close)。
-    4. **EPS (每股盈餘)** 與 **P/E (本益比)** (若無最新數據請估算或找最近一季)。
-    5. 過去 14 天收盤價趨勢。
-    6. 年化波動率 (Volatility)。
-
-    第二部分：混合模型預測指令 (Hybrid Model Prediction)
-    請模擬執行以下分析並提供結果 (請用繁體中文撰寫內容)：
-    
-    1. **核心預測與趨勢修正 (LSTM邏輯)**：
-       - 分析歷史價格序列，捕捉非線性趨勢和週期模式 (看漲/看跌/震盪)。
-       - 結合技術指標 (RSI, MACD) 判斷短期超買/超賣狀態。
-    
-    2. **波動率錨定 (GARCH邏輯)**：
-       - 評估未來波動率，是否處於波動集聚期 (大漲大跌後)。
-    
-    3. **基本面與情緒錨定**：
-       - 掃描近期新聞、財報、社群討論的情緒傾向 (積極/消極/中性)。
-       - 提取財報關鍵意外數據 (如營收超預期、毛利率變化)。
-       - 指出當前市場最大共識敘事 (例如："AI伺服器供應商"、"庫存去化結束")。
-
-    4. **風險模擬 (情境層)**：
-       - 設定 [樂觀、中性、悲觀] 三種情景。
-       - 為每種情景提供核心驅動邏輯和可能的價格區間。
-
-    請嚴格按照此 JSON 模式返回數據。
-  `;
-
   try {
+    const ai = getAiClient();
+    const prompt = `
+      請針對台灣股票代碼：${symbol} 進行深度財務分析與未來價格路徑預測 (以台幣 TWD 為基準)。
+      
+      **重要指令：所有分析內容、建議、趨勢描述與結論，請務必使用「繁體中文」回答。**
+
+      第一部分：基礎數據獲取 (使用 Google Search)
+      1. 公司完整名稱。
+      2. 目前市值 (Market Cap)。
+      3. 目前股價 (Current Price) 與 前一日收盤價 (Prev Close)。
+      4. **EPS (每股盈餘)** 與 **P/E (本益比)** (若無最新數據請估算或找最近一季)。
+      5. 過去 14 天收盤價趨勢。
+      6. 年化波動率 (Volatility)。
+
+      第二部分：混合模型預測指令 (Hybrid Model Prediction)
+      請模擬執行以下分析並提供結果 (請用繁體中文撰寫內容)：
+      
+      1. **核心預測與趨勢修正 (LSTM邏輯)**：
+         - 分析歷史價格序列，捕捉非線性趨勢和週期模式 (看漲/看跌/震盪)。
+         - 結合技術指標 (RSI, MACD) 判斷短期超買/超賣狀態。
+      
+      2. **波動率錨定 (GARCH邏輯)**：
+         - 評估未來波動率，是否處於波動集聚期 (大漲大跌後)。
+      
+      3. **基本面與情緒錨定**：
+         - 掃描近期新聞、財報、社群討論的情緒傾向 (積極/消極/中性)。
+         - 提取財報關鍵意外數據 (如營收超預期、毛利率變化)。
+         - 指出當前市場最大共識敘事 (例如："AI伺服器供應商"、"庫存去化結束")。
+
+      4. **風險模擬 (情境層)**：
+         - 設定 [樂觀、中性、悲觀] 三種情景。
+         - 為每種情景提供核心驅動邏輯和可能的價格區間。
+
+      請嚴格按照此 JSON 模式返回數據。
+    `;
+
     const response = await ai.models.generateContent({
       model: MODEL_NAME,
       contents: prompt,
@@ -136,7 +145,7 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
 
   } catch (error) {
     console.error("Gemini Analysis Error:", error);
-    throw new Error(`無法分析 ${symbol}。請檢查 API Key 設定或重試。`);
+    throw error;
   }
 };
 
@@ -170,8 +179,12 @@ export const getOverallPortfolioAdvice = async (
             }
         });
         return response.text || "無法生成投資組合建議。";
-    } catch (e) {
+    } catch (e: any) {
         console.error(e);
-        return "目前無法提供建議。請檢查 API Key 設定。";
+        // 如果錯誤訊息包含 Key 相關字眼，直接回傳詳細設定指引
+        if (e.message && (e.message.includes("API Key") || e.message.includes("API_KEY"))) {
+            return e.message;
+        }
+        return "目前無法提供建議。請檢查網路連線或稍後再試。";
     }
 };

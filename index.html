@@ -23,8 +23,8 @@
       }
     </script>
     <script>
-      // Polyfill process for browser environments to prevent "process is not defined" error
-      // This is crucial for the site to render on static hosts
+      // 關鍵修復：瀏覽器環境 Polyfill
+      // 這能防止部署後因找不到 'process' 而導致的白屏 (Blank Page) 崩潰
       window.process = window.process || { env: {} };
     </script>
   <script type="importmap">
