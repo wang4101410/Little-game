@@ -36,7 +36,6 @@ const App: React.FC = () => {
   const [analyses, setAnalyses] = useState<Record<string, StockAnalysis>>({});
   const [loadingStates, setLoadingStates] = useState<Record<string, boolean>>({});
   const [overallAdvice, setOverallAdvice] = useState<string>("");
-  // 增加狀態文字，讓使用者知道目前進行到哪個拆解步驟
   const [adviceStatusText, setAdviceStatusText] = useState<string>("AI 戰略"); 
   const [isAdviceLoading, setIsAdviceLoading] = useState(false);
   const [isAdviceExpanded, setIsAdviceExpanded] = useState(false);
@@ -87,12 +86,20 @@ const App: React.FC = () => {
       const analysis = await analyzeStockWithGemini(symbol);
       setAnalyses(prev => ({ ...prev, [symbol]: analysis }));
       
+      // 更新持倉名稱 (如果名稱有變)
       setPortfolio(prev => prev.map(p => 
         p.symbol === symbol ? { ...p, name: analysis.companyName } : p
       ));
     } catch (error: any) {
       console.error(error);
-      // 如果單一股票分析失敗，只在 console 報錯，不要一直彈出 alert 影響體驗
+      // 這裡簡單使用 alert 通知，讓使用者知道不是系統壞了，而是 API 限制或網路問題
+      // 在實際生產環境中，可以使用 Toast 通知
+      if (error.message.includes("429")) {
+         alert(`無法分析 ${symbol}: 請求過於頻繁，請稍等幾秒後再試。`);
+      } else {
+         // 不干擾使用者的非關鍵錯誤，僅在 Console 顯示，除非是完全失敗
+         console.warn(`分析 ${symbol} 失敗:`, error.message);
+      }
     } finally {
       setLoadingStates(prev => ({ ...prev, [symbol]: false }));
     }
@@ -199,12 +206,9 @@ const App: React.FC = () => {
           ...watchlist.map(w => w.symbol)
       ]));
 
-      // 序列化處理 (Sequential Processing)
-      // 這也是一種「拆解」，避免瞬間併發過多請求
       for (const symbol of allSymbols) {
           if (!loadingStates[symbol]) {
               await handleAnalyze(symbol);
-              // 每次請求間隔 1.5 秒
               await new Promise(resolve => setTimeout(resolve, 1500));
           }
       }
@@ -214,7 +218,7 @@ const App: React.FC = () => {
       if (isAdviceLoading) return;
       
       setIsAdviceLoading(true);
-      setAdviceStatusText("掃描市場..."); // 顯示階段一
+      setAdviceStatusText("掃描市場..."); 
       setIsAdviceExpanded(true);
 
       try {
@@ -227,18 +231,16 @@ const App: React.FC = () => {
             };
         });
 
-        // 稍微延遲一下 UI 更新，讓使用者看到狀態變化
         await new Promise(r => setTimeout(r, 500));
         
         const advice = await getOverallPortfolioAdvice(itemsForAdvice, settings.cash);
-        setAdviceStatusText("分析完成"); // 顯示階段二完成
+        setAdviceStatusText("分析完成"); 
         setOverallAdvice(advice);
       } catch (error) {
         console.error(error);
         setAdviceStatusText("分析失敗");
       } finally {
         setIsAdviceLoading(false);
-        // 2秒後恢復按鈕文字
         setTimeout(() => setAdviceStatusText("AI 戰略"), 2000);
       }
   };

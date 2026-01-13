@@ -4,7 +4,7 @@ import { StockAnalysis } from "../types";
 // 設定模型名稱
 const MODEL_NAME = "gemini-3-flash-preview";
 
-// 輔助函式：暫停 (Sleep) - 用於步驟之間的緩衝
+// 輔助函式：暫停 (Sleep)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // 獲取 AI 客戶端
@@ -22,12 +22,10 @@ const getAiClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-// --- 拆解後的原子功能 (Atomic Functions) ---
+// --- 原子功能 (Atomic Functions) ---
 
 /**
- * 階段一：市場偵察 (The Scout)
- * 目的：只獲取外部市場資訊，不處理個人持倉。
- * 優點：Token 少，專注於搜尋，不會混淆模型。
+ * 階段一：市場偵察 (The Scout) - 用於大盤
  */
 const fetchMarketTrends = async (ai: GoogleGenAI): Promise<string> => {
     const prompt = `
@@ -40,21 +38,17 @@ const fetchMarketTrends = async (ai: GoogleGenAI): Promise<string> => {
         const response = await ai.models.generateContent({
             model: MODEL_NAME,
             contents: prompt,
-            config: {
-                tools: [{ googleSearch: {} }], // 只有這一步驟開啟搜尋
-            }
+            config: { tools: [{ googleSearch: {} }] }
         });
         return response.text || "目前無法取得市場資訊。";
     } catch (e) {
         console.warn("市場偵察失敗:", e);
-        return "市場資訊獲取失敗，將基於一般邏輯分析。";
+        return "市場資訊獲取失敗。";
     }
 };
 
 /**
- * 階段二：策略推理 (The Analyst)
- * 目的：結合市場資訊與個人持倉進行邏輯分析。
- * 優點：關閉搜尋工具，純文字推理，極難觸發 429 限制。
+ * 階段二：策略推理 (The Analyst) - 用於大盤
  */
 const analyzePortfolioStrategy = async (
     ai: GoogleGenAI, 
@@ -83,89 +77,140 @@ const analyzePortfolioStrategy = async (
     const response = await ai.models.generateContent({
         model: MODEL_NAME,
         contents: prompt,
-        config: {
-            // 關鍵：這裡完全不設定 tools，強制使用純推理模式
-            // 這能大幅降低系統負載，避免 Resource Exhausted
-        }
+        config: {} // 關閉工具
     });
     return response.text || "無法生成分析。";
 };
 
+// --- 個股分析專用的兩階段管線 ---
+
+/**
+ * 個股階段一：數據獵人 (The Hunter)
+ * 任務：只負責搜尋硬數據，不負責格式化。
+ */
+const fetchStockRawData = async (ai: GoogleGenAI, symbol: string): Promise<{ text: string, urls: string[] }> => {
+    const prompt = `
+      針對台灣股票代碼：${symbol}，請使用 Google Search 搜尋最新詳細數據。
+      我需要一段包含以下資訊的詳細摘要 (若無精確數據請找最近似值)：
+      1. 公司全名。
+      2. 目前股價 (Price)、前一日收盤價 (Previous Close)。
+      3. 基本面：本益比 (PE Ratio)、每股盈餘 (EPS)、市值 (Market Cap)。
+      4. 歷史走勢：過去 5-10 天的股價大概走勢 (上漲/下跌/持平)。
+      5. 波動性：近期的股價波動程度 (高/低)。
+      6. 近期該公司相關的重大新聞標題 (1-2 則)。
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: prompt,
+            config: { tools: [{ googleSearch: {} }] } // 開啟搜尋
+        });
+
+        // 提取引用來源
+        const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+        const urls = (groundingChunks as any[])
+            .map((chunk: any) => chunk.web?.uri)
+            .filter((uri: any): uri is string => typeof uri === "string");
+        const uniqueUrls = Array.from(new Set(urls));
+
+        return { 
+            text: response.text || `無法搜尋到 ${symbol} 的數據`, 
+            urls: uniqueUrls 
+        };
+    } catch (e) {
+        console.warn(`[Stage 1] Search failed for ${symbol}`, e);
+        throw new Error("無法連接 Google Search 獲取股價數據");
+    }
+};
+
+/**
+ * 個股階段二：數據煉金術師 (The Alchemist)
+ * 任務：將雜亂的搜尋文字轉換為嚴格的 JSON，並生成 AI 預測。
+ */
+const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: string): Promise<any> => {
+    const prompt = `
+      你是一個資料處理與金融分析引擎。
+      
+      任務來源數據：
+      ${rawData}
+
+      任務目標：
+      1. 從來源數據中提取財務欄位 (Price, EPS, PE, etc.)。
+      2. 基於來源數據中的新聞與走勢，生成 "aiPrediction" (模擬 LSTM/GARCH 觀點)。
+      3. 嚴格輸出為 JSON 格式。
+
+      Schema 定義：
+      - currentPrice, prevClose 必須為數字。若來源數據中找不到，請根據上下文估算或填 0。
+      - volatility 若未知，預設填 0.3。
+      - advice 請用繁體中文給出 50 字以內的短評。
+      - aiPrediction 內的所有文字欄位必須使用繁體中文。
+
+      JSON 結構要求 (請只回傳 JSON):
+      {
+        "symbol": "${symbol}",
+        "companyName": "string",
+        "marketCap": "string",
+        "eps": "string (e.g. '12.5' or 'N/A')",
+        "pe": "string (e.g. '20.1' or 'N/A')",
+        "currentPrice": number,
+        "prevClose": number,
+        "volatility": number,
+        "advice": "string",
+        "aiPrediction": {
+             "trendAnalysis": "string (基於技術面觀點)",
+             "volatilityAnalysis": "string (基於波動率觀點)",
+             "keyLevels": "string (e.g. '支撐 xxx / 壓力 xxx')",
+             "scenarios": {
+                 "optimistic": "string",
+                 "neutral": "string",
+                 "pessimistic": "string"
+             },
+             "conclusion": "string"
+        }
+      }
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: prompt,
+            config: { 
+                responseMimeType: "application/json",
+                // 這裡不放 tools，純推理，速度快且穩定
+            }
+        });
+        
+        const text = response.text || "{}";
+        return JSON.parse(text);
+    } catch (e) {
+        console.error(`[Stage 2] JSON Generation failed for ${symbol}`, e);
+        throw new Error("AI 數據解析失敗");
+    }
+};
 
 // --- 主要導出函式 ---
 
 export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnalysis> => {
-  // 個股分析仍保持單一請求，但我們移除不必要的複雜指令以減輕負載
   try {
     const ai = getAiClient();
-    const prompt = `
-      針對台股 ${symbol}，請用 Google Search 查詢最新數據並回傳 JSON。
-      需要：公司名、市值、現價、昨收、EPS、PE、14天歷史價、波動率(預估)。
-      並提供簡短投資建議與趨勢預測(LSTM/GARCH概念)。
-      請確保回傳為標準 JSON 格式。
-    `;
 
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-                symbol: { type: Type.STRING },
-                companyName: { type: Type.STRING },
-                marketCap: { type: Type.STRING },
-                eps: { type: Type.STRING },
-                pe: { type: Type.STRING },
-                currentPrice: { type: Type.NUMBER },
-                prevClose: { type: Type.NUMBER },
-                volatility: { type: Type.NUMBER },
-                history: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            date: { type: Type.STRING },
-                            price: { type: Type.NUMBER }
-                        }
-                    }
-                },
-                advice: { type: Type.STRING },
-                aiPrediction: {
-                    type: Type.OBJECT,
-                    properties: {
-                        trendAnalysis: { type: Type.STRING },
-                        volatilityAnalysis: { type: Type.STRING },
-                        keyLevels: { type: Type.STRING },
-                        scenarios: {
-                            type: Type.OBJECT,
-                            properties: {
-                                optimistic: { type: Type.STRING },
-                                neutral: { type: Type.STRING },
-                                pessimistic: { type: Type.STRING }
-                            }
-                        },
-                        conclusion: { type: Type.STRING }
-                    }
-                }
-            },
-            required: ["symbol", "companyName", "currentPrice", "prevClose"]
-        }
-      },
-    });
+    // 1. 執行階段一：搜尋 (Search)
+    // 這裡可能會花 2-5 秒
+    const searchResult = await fetchStockRawData(ai, symbol);
 
-    const text = response.text || "{}";
-    const data = JSON.parse(text);
+    // 2. 緩衝 (Sleep)
+    // 避免瞬間發起第二個請求導致 Rate Limit (雖然 Stage 2 不用 Search，但預防萬一)
+    await sleep(800);
 
-    // 資料處理邏輯保持不變
-    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-    const urls = (groundingChunks as any[])
-      .map((chunk: any) => chunk.web?.uri)
-      .filter((uri: any): uri is string => typeof uri === "string");
-    const uniqueUrls = Array.from(new Set(urls));
-    const changePercent = ((data.currentPrice - data.prevClose) / data.prevClose) * 100;
+    // 3. 執行階段二：推理與格式化 (Reasoning)
+    // 這裡會產生乾淨的 JSON
+    const data = await transformDataToJson(ai, symbol, searchResult.text);
+
+    // 4. 資料合併與計算
+    const changePercent = data.prevClose > 0 
+        ? ((data.currentPrice - data.prevClose) / data.prevClose) * 100 
+        : 0;
 
     return {
       symbol: data.symbol?.toUpperCase() || symbol,
@@ -175,18 +220,18 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
       pe: data.pe || 'N/A',
       currentPrice: data.currentPrice || 0,
       prevClose: data.prevClose || 0,
-      changePercent: changePercent || 0,
+      changePercent: changePercent,
       volatility: data.volatility || 0.3,
-      history: data.history || [],
+      history: [], // 簡化：歷史數據若搜尋不到，留空交由前端圖表處理或後續優化
       advice: data.advice || "暫無建議",
-      aiPrediction: data.aiPrediction,
-      groundingUrls: uniqueUrls,
+      aiPrediction: data.aiPrediction, // 這裡現在應該能穩定產出了
+      groundingUrls: searchResult.urls, // 使用 Stage 1 找到的連結
       lastUpdated: Date.now(),
     };
 
   } catch (error: any) {
-    console.error("Gemini Analysis Error:", error);
-    // 這裡我們保留原始錯誤拋出，讓 UI 層決定是否重試
+    console.error(`Gemini Pipeline Error (${symbol}):`, error);
+    // 傳遞具體錯誤訊息給 UI
     throw error;
   }
 };
@@ -196,31 +241,18 @@ export const getOverallPortfolioAdvice = async (
   cashOnHand: number
 ): Promise<string> => {
     const ai = getAiClient();
-    
-    // 步驟拆解 1: 準備持倉摘要字串
     const summary = portfolioItems.length > 0 
       ? portfolioItems.map(p => `${p.symbol}: ${p.shares} 股 (約 NT$${Math.round(p.currentPrice * p.shares)})`).join(", ")
       : "目前沒有持倉";
 
     try {
-        // 步驟拆解 2: 執行「階段一：市場偵察」
-        // 這一步會消耗 Search 配額
         const marketTrends = await fetchMarketTrends(ai);
-        
-        // 緩衝：在兩個 API 呼叫之間稍微休息一下 (1秒)，讓 Server 喘口氣
         await sleep(1000);
-
-        // 步驟拆解 3: 執行「階段二：策略推理」
-        // 這一步完全不使用 Search，只消耗文字生成配額
         const finalAdvice = await analyzePortfolioStrategy(ai, marketTrends, summary, cashOnHand);
-
         return finalAdvice;
-
     } catch (e: any) {
-        console.error("Portfolio Advice Error:", e);
-        // 如果是配額錯誤，回傳友善提示
         if (e.message?.includes("429")) {
-            return "⚠️ AI 思考負載過高。請稍等 1 分鐘後再試 (系統正在自動調節請求頻率)。";
+            return "⚠️ AI 思考負載過高。請稍等 1 分鐘後再試。";
         }
         return `⚠️ 建議生成失敗: ${e.message}`;
     }
