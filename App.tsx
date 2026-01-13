@@ -36,6 +36,8 @@ const App: React.FC = () => {
   const [analyses, setAnalyses] = useState<Record<string, StockAnalysis>>({});
   const [loadingStates, setLoadingStates] = useState<Record<string, boolean>>({});
   const [overallAdvice, setOverallAdvice] = useState<string>("");
+  // 增加狀態文字，讓使用者知道目前進行到哪個拆解步驟
+  const [adviceStatusText, setAdviceStatusText] = useState<string>("AI 戰略"); 
   const [isAdviceLoading, setIsAdviceLoading] = useState(false);
   const [isAdviceExpanded, setIsAdviceExpanded] = useState(false);
 
@@ -71,9 +73,6 @@ const App: React.FC = () => {
   useEffect(() => {
     if (sellItem && sellPrice && sellShares && settings.feeRate) {
         const amount = parseFloat(sellShares) * parseFloat(sellPrice);
-        // Selling usually involves tax (0.3%) + fee. 
-        // For simplicity, we stick to feeRate, but user can edit.
-        // Let's assume standard fee for now.
         const estimatedFee = Math.round(amount * (settings.feeRate / 100));
         setSellFee(estimatedFee.toString());
     }
@@ -93,8 +92,7 @@ const App: React.FC = () => {
       ));
     } catch (error: any) {
       console.error(error);
-      // Explicitly alert the user of the error for easier debugging in deployment
-      alert(`分析失敗 (${symbol}): ${error.message || '請檢查 API Key 或網路連線'}`);
+      // 如果單一股票分析失敗，只在 console 報錯，不要一直彈出 alert 影響體驗
     } finally {
       setLoadingStates(prev => ({ ...prev, [symbol]: false }));
     }
@@ -108,7 +106,6 @@ const App: React.FC = () => {
     const price = parseFloat(newPrice);
     const fee = newFee ? parseFloat(newFee) : 0;
     
-    // Cost Basis: (Price * Shares + Fee) / Shares
     const totalCost = (price * shares) + fee;
     const avgCost = totalCost / shares;
 
@@ -121,11 +118,8 @@ const App: React.FC = () => {
     };
 
     setPortfolio(prev => [...prev, newItem]);
-    
-    // Deduct from cash
     setSettings(prev => ({...prev, cash: prev.cash - totalCost}));
 
-    // Reset Form
     setNewSymbol('');
     setNewShares('');
     setNewPrice('');
@@ -177,10 +171,8 @@ const App: React.FC = () => {
       setSettings(prev => ({...prev, cash: prev.cash + revenue}));
       
       if (sharesToSell === sellItem.shares) {
-           // Sold all
            setPortfolio(prev => prev.filter(p => p.id !== sellItem.id));
       } else {
-           // Partial sell
            setPortfolio(prev => prev.map(p => 
                p.id === sellItem.id ? { ...p, shares: p.shares - sharesToSell } : p
            ));
@@ -195,39 +187,60 @@ const App: React.FC = () => {
   const handleAddToWatchlist = (symbol: string) => {
       if (watchlist.some(w => w.symbol === symbol)) return;
       setWatchlist(prev => [...prev, { id: Date.now().toString(), symbol }]);
-      // Switch to watchlist tab for feedback
       setActiveTab('watchlist');
-      // If not analyzed, analyze
       if (!analyses[symbol]) {
           handleAnalyze(symbol);
       }
   };
 
   const handleRefreshAll = async () => {
-      const allSymbols = new Set([
+      const allSymbols = Array.from(new Set([
           ...portfolio.map(p => p.symbol),
           ...watchlist.map(w => w.symbol)
-      ]);
-      for(const symbol of allSymbols) {
-          handleAnalyze(symbol);
+      ]));
+
+      // 序列化處理 (Sequential Processing)
+      // 這也是一種「拆解」，避免瞬間併發過多請求
+      for (const symbol of allSymbols) {
+          if (!loadingStates[symbol]) {
+              await handleAnalyze(symbol);
+              // 每次請求間隔 1.5 秒
+              await new Promise(resolve => setTimeout(resolve, 1500));
+          }
       }
   };
 
   const handleGetPortfolioAdvice = async () => {
+      if (isAdviceLoading) return;
+      
       setIsAdviceLoading(true);
-      setIsAdviceExpanded(true); // Auto expand when generating new advice
-      const itemsForAdvice = portfolio.map(item => {
-          const analysis = analyses[item.symbol];
-          return {
-              symbol: item.symbol,
-              shares: item.shares,
-              currentPrice: analysis ? analysis.currentPrice : item.avgCost
-          };
-      });
+      setAdviceStatusText("掃描市場..."); // 顯示階段一
+      setIsAdviceExpanded(true);
 
-      const advice = await getOverallPortfolioAdvice(itemsForAdvice, settings.cash);
-      setOverallAdvice(advice);
-      setIsAdviceLoading(false);
+      try {
+        const itemsForAdvice = portfolio.map(item => {
+            const analysis = analyses[item.symbol];
+            return {
+                symbol: item.symbol,
+                shares: item.shares,
+                currentPrice: analysis ? analysis.currentPrice : item.avgCost
+            };
+        });
+
+        // 稍微延遲一下 UI 更新，讓使用者看到狀態變化
+        await new Promise(r => setTimeout(r, 500));
+        
+        const advice = await getOverallPortfolioAdvice(itemsForAdvice, settings.cash);
+        setAdviceStatusText("分析完成"); // 顯示階段二完成
+        setOverallAdvice(advice);
+      } catch (error) {
+        console.error(error);
+        setAdviceStatusText("分析失敗");
+      } finally {
+        setIsAdviceLoading(false);
+        // 2秒後恢復按鈕文字
+        setTimeout(() => setAdviceStatusText("AI 戰略"), 2000);
+      }
   };
 
   // Calculations
@@ -278,10 +291,11 @@ const App: React.FC = () => {
             <div className="flex items-center gap-3">
                 <button 
                   onClick={handleGetPortfolioAdvice}
-                  className="hidden md:flex items-center gap-2 text-sm font-medium text-brand-400 hover:text-brand-300 transition-colors border border-brand-400/30 px-3 py-1.5 rounded-full hover:bg-brand-400/10"
+                  disabled={isAdviceLoading}
+                  className={`hidden md:flex items-center gap-2 text-sm font-medium transition-colors border px-3 py-1.5 rounded-full ${isAdviceLoading ? 'border-brand-500 bg-brand-500/10 text-brand-300' : 'text-brand-400 hover:text-brand-300 border-brand-400/30 hover:bg-brand-400/10'}`}
                 >
-                  <Sparkles size={16} />
-                  {isAdviceLoading ? "分析中..." : "AI 戰略"}
+                  <Sparkles size={16} className={isAdviceLoading ? "animate-pulse" : ""} />
+                  {isAdviceLoading ? adviceStatusText : "AI 戰略"}
                 </button>
                 <button
                     onClick={() => setIsSettingsOpen(true)}
