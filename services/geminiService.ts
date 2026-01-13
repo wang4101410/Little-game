@@ -4,8 +4,36 @@ import { StockAnalysis } from "../types";
 // 設定模型名稱
 const MODEL_NAME = "gemini-3-flash-preview";
 
-// 輔助函式：暫停 (Sleep)
+// 輔助函式：暫停 (Sleep) - 稍微延長緩衝時間至 1.5 秒
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 輔助函式：強韌的 JSON 解析器 (去除 Markdown 標記)
+const cleanAndParseJson = (text: string) => {
+  if (!text) return {};
+  try {
+    // 1. 嘗試直接解析
+    return JSON.parse(text);
+  } catch (e) {
+    try {
+      // 2. 去除 Markdown code blocks (```json ... ```)
+      let clean = text.replace(/```json\s*/g, '').replace(/```/g, '').trim();
+      return JSON.parse(clean);
+    } catch (e2) {
+      // 3. 暴力搜尋：只取第一個 { 和最後一個 } 之間的內容
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start !== -1 && end !== -1) {
+        try {
+            return JSON.parse(text.substring(start, end + 1));
+        } catch (e3) {
+            console.error("JSON Rescue Failed:", text);
+            throw new Error("無法解析 AI 回傳的數據格式");
+        }
+      }
+      throw new Error("回傳內容不包含有效的 JSON 物件");
+    }
+  }
+};
 
 // 獲取 AI 客戶端
 const getAiClient = () => {
@@ -118,9 +146,13 @@ const fetchStockRawData = async (ai: GoogleGenAI, symbol: string): Promise<{ tex
             text: response.text || `無法搜尋到 ${symbol} 的數據`, 
             urls: uniqueUrls 
         };
-    } catch (e) {
+    } catch (e: any) {
         console.warn(`[Stage 1] Search failed for ${symbol}`, e);
-        throw new Error("無法連接 Google Search 獲取股價數據");
+        // 不拋出錯誤，而是回傳「搜尋失敗」，讓 Stage 2 至少能生成一個空的結構，而不是讓 UI 崩潰
+        return {
+            text: `(系統訊息：Google Search 暫時無法使用) 無法取得 ${symbol} 的即時數據。請假設數據未知並給出一般性建議。`,
+            urls: []
+        };
     }
 };
 
@@ -140,13 +172,13 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
       2. 基於來源數據中的新聞與走勢，生成 "aiPrediction" (模擬 LSTM/GARCH 觀點)。
       3. 嚴格輸出為 JSON 格式。
 
-      Schema 定義：
-      - currentPrice, prevClose 必須為數字。若來源數據中找不到，請根據上下文估算或填 0。
+      Schema 定義與預設值處理：
+      - currentPrice, prevClose 必須為數字。**如果來源數據中找不到，請填 0**。
       - volatility 若未知，預設填 0.3。
-      - advice 請用繁體中文給出 50 字以內的短評。
+      - advice 請用繁體中文給出 50 字以內的短評。若無數據，請回答「暫無數據，請稍後再試」。
       - aiPrediction 內的所有文字欄位必須使用繁體中文。
 
-      JSON 結構要求 (請只回傳 JSON):
+      JSON 結構要求 (請只回傳 JSON，不要包含 Markdown 標記):
       {
         "symbol": "${symbol}",
         "companyName": "string",
@@ -176,48 +208,16 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
             model: MODEL_NAME,
             contents: prompt,
             config: { 
-                responseMimeType: "application/json",
-                // 這裡不放 tools，純推理，速度快且穩定
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        symbol: { type: Type.STRING },
-                        companyName: { type: Type.STRING },
-                        marketCap: { type: Type.STRING },
-                        eps: { type: Type.STRING },
-                        pe: { type: Type.STRING },
-                        currentPrice: { type: Type.NUMBER },
-                        prevClose: { type: Type.NUMBER },
-                        volatility: { type: Type.NUMBER },
-                        advice: { type: Type.STRING },
-                        aiPrediction: {
-                            type: Type.OBJECT,
-                            properties: {
-                                trendAnalysis: { type: Type.STRING },
-                                volatilityAnalysis: { type: Type.STRING },
-                                keyLevels: { type: Type.STRING },
-                                scenarios: {
-                                    type: Type.OBJECT,
-                                    properties: {
-                                        optimistic: { type: Type.STRING },
-                                        neutral: { type: Type.STRING },
-                                        pessimistic: { type: Type.STRING }
-                                    }
-                                },
-                                conclusion: { type: Type.STRING }
-                            }
-                        }
-                    },
-                    required: ["symbol", "currentPrice", "prevClose"]
-                }
+                // 關閉 responseMimeType，因為有時候模型開啟此選項反而會導致奇怪的格式錯誤
+                // 我們改用 cleanAndParseJson 手動處理
             }
         });
         
         const text = response.text || "{}";
-        return JSON.parse(text);
+        return cleanAndParseJson(text);
     } catch (e) {
         console.error(`[Stage 2] JSON Generation failed for ${symbol}`, e);
-        throw new Error("AI 數據解析失敗");
+        throw new Error("AI 數據解析失敗 (JSON 格式錯誤)");
     }
 };
 
@@ -228,15 +228,13 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
     const ai = getAiClient();
 
     // 1. 執行階段一：搜尋 (Search)
-    // 這裡可能會花 2-5 秒
     const searchResult = await fetchStockRawData(ai, symbol);
 
     // 2. 緩衝 (Sleep)
-    // 避免瞬間發起第二個請求導致 Rate Limit (雖然 Stage 2 不用 Search，但預防萬一)
-    await sleep(800);
+    // 稍微加長到 1.5 秒，確保 Google API 不會因為併發過高而拒絕
+    await sleep(1500);
 
     // 3. 執行階段二：推理與格式化 (Reasoning)
-    // 這裡會產生乾淨的 JSON
     const data = await transformDataToJson(ai, symbol, searchResult.text);
 
     // 4. 資料合併與計算
@@ -254,16 +252,15 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
       prevClose: data.prevClose || 0,
       changePercent: changePercent,
       volatility: data.volatility || 0.3,
-      history: [], // 簡化：歷史數據若搜尋不到，留空交由前端圖表處理或後續優化
+      history: [], 
       advice: data.advice || "暫無建議",
-      aiPrediction: data.aiPrediction, // 這裡現在應該能穩定產出了
-      groundingUrls: searchResult.urls, // 使用 Stage 1 找到的連結
+      aiPrediction: data.aiPrediction, 
+      groundingUrls: searchResult.urls, 
       lastUpdated: Date.now(),
     };
 
   } catch (error: any) {
     console.error(`Gemini Pipeline Error (${symbol}):`, error);
-    // 傳遞具體錯誤訊息給 UI
     throw error;
   }
 };
@@ -279,7 +276,7 @@ export const getOverallPortfolioAdvice = async (
 
     try {
         const marketTrends = await fetchMarketTrends(ai);
-        await sleep(1000);
+        await sleep(1500); // 同步增加緩衝時間
         const finalAdvice = await analyzePortfolioStrategy(ai, marketTrends, summary, cashOnHand);
         return finalAdvice;
     } catch (e: any) {
