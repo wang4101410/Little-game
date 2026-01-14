@@ -145,11 +145,6 @@ const App: React.FC = () => {
     // 第 9, 19, 29... 支股票在 Tick 9 更新
     // 這樣保證了每 10 支股票的更新是錯開的 (10秒間隔)，符合「第1支完成後10秒換第2支」的時序要求。
     
-    // 如果是第一次載入 (tickCount === 0)，我們可能希望快速獲取所有數據 (或是依然遵守規則)
-    // 為了使用者體驗，Tick 0 時我們可稍微放寬，或者嚴格遵守。
-    // 這裡我們嚴格遵守規則，但為了讓使用者第一次看到東西，我們可以讓 Tick 0 觸發全部 (但有風險)，
-    // 建議：嚴格遵守，使用者慢慢看到數據跳出來比較安全。
-    
     const currentSlot = tickCount % 10;
     
     // 找出本輪需要更新的股票
@@ -183,8 +178,7 @@ const App: React.FC = () => {
                         };
                     });
                 } else {
-                     // 可選：若回傳 null，表示找不到精確價格，這裡可以選擇是否要在 UI 顯示警告
-                     // 目前選擇保持上一次的價格，不因短暫失敗而清空
+                     // FinMind 未回傳數據，保持原樣或顯示警告
                 }
             } catch (e) {
                 console.warn(`Polling failed for ${symbol}`);
@@ -237,10 +231,12 @@ const App: React.FC = () => {
       ));
     } catch (error: any) {
       console.error(error);
-      if (error.message?.includes("429") || error.message?.includes("Resource has been exhausted")) {
+      if (error.message?.includes("429")) {
          alert(`分析 ${symbol} 失敗：AI 請求過於頻繁 (429)。請稍等幾秒後再試。`);
+      } else if (error.message?.includes("FinMind API")) {
+         alert(`分析 ${symbol} 失敗：${error.message}`);
       } else if (error.message?.includes("無法從權威來源")) {
-         alert(`分析 ${symbol} 失敗：AI 無法在玩股網找到精確價格。為求安全，已終止分析。`);
+         alert(`分析 ${symbol} 失敗：無法取得精確現價，系統拒絕估算。`);
       } else {
          console.warn(`分析 ${symbol} 失敗:`, error.message);
       }

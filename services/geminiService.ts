@@ -3,6 +3,8 @@ import { StockAnalysis } from "../types";
 
 // 設定模型名稱
 const MODEL_NAME = "gemini-3-flash-preview";
+// FinMind API Token
+const FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMS0xNCAwOTowNzoxOCIsInVzZXJfaWQiOiJhNDEwMTQxMCIsImVtYWlsIjoiYTQxMDE0MTBAZ21haWwuY29tIiwiaXAiOiIxMjUuMjI3LjE2Mi4yMTEifQ.fSiNBjlmL_UKHsz5pZH4ptjJUq7x8D4xF2x8ex51ksU";
 
 // 輔助函式：暫停 (Sleep)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -46,54 +48,44 @@ const getAiClient = () => {
 
 // --- 原子功能 ---
 
-// 1. 嚴格獲取即時價格 (鎖定玩股網 Wantgoo)
-export const fetchRealTimePrice = async (symbol: string): Promise<number | null> => {
-    const ai = getAiClient();
-    
-    // 嚴格 Prompt：指定來源、禁止估算
-    // 強制搜尋 "玩股網" 關鍵字，這通常會帶出結構化的 SEO 標題 (e.g., "台積電(2330) - 個股走勢 - 玩股網")
-    const prompt = `
-      任務：查詢台灣股票 ${symbol} 的「精確」價格。
-      限制：必須使用 Google Search 搜尋 "玩股網 ${symbol}"。
-      
-      規則：
-      1. 請閱讀搜尋結果中來自 wantgoo.com (玩股網) 的標題或摘要。
-      2. 提取「成交價」或大字體的即時價格。
-      3. **嚴格禁止估算**：如果搜尋結果沒有明確的數字，或者來源不是玩股網，請回傳 "NULL"。
-      4. 輸出格式：只回傳一個純數字 (例如: 2330.00)，不要有任何文字、貨幣符號或說明。
-    `;
-    
+// 1. FinMind API 獲取即時(或最新收盤)價格
+export const fetchFinMindPrice = async (symbol: string): Promise<number | null> => {
     try {
-        const response = await ai.models.generateContent({
-            model: MODEL_NAME,
-            contents: prompt,
-            config: { tools: [{ googleSearch: {} }] }
-        });
+        // 設定開始日期為 7 天前，確保跨週末或連假時能抓到最近的交易日數據
+        const date = new Date();
+        date.setDate(date.getDate() - 7);
+        const startDate = date.toISOString().split('T')[0];
         
-        const text = response.text?.trim() || "";
+        // FinMind API URL (TaiwanStockPrice)
+        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${symbol}&start_date=${startDate}&token=${FINMIND_TOKEN}`;
         
-        // 如果 AI 回傳 NULL 或找不到數字
-        if (text.includes("NULL")) return null;
-
-        // 提取數字 (支援逗號如 1,000.00)
-        // 使用更嚴格的 Regex，確保是獨立的數字，而不是日期 (如 2024)
-        const match = text.match(/^[\d,]+\.?\d*$/); 
-        
-        if (match) {
-            return parseFloat(match[0].replace(/,/g, ''));
+        const response = await fetch(url);
+        if (!response.ok) {
+            console.warn(`FinMind API Error: ${response.status}`);
+            return null;
         }
         
-        // Fallback: 嘗試從簡單文字中提取，但排除日期格式 (YYYY-MM-DD)
-        const looseMatch = text.match(/([\d,]+\.?\d*)/);
-        if (looseMatch && !text.includes('-')) {
-             return parseFloat(looseMatch[0].replace(/,/g, ''));
+        const json = await response.json();
+        
+        if (json.msg === "success" && Array.isArray(json.data) && json.data.length > 0) {
+            // 取最後一筆 (最新日期) 的資料
+            const latestData = json.data[json.data.length - 1];
+            const price = parseFloat(latestData.close);
+            
+            // 嚴格檢查：必須是有效數字且大於 0
+            if (!isNaN(price) && price > 0) {
+                return price;
+            }
         }
-
         return null;
     } catch (e) {
+        console.error("FinMind API Exception:", e);
         return null;
     }
 };
+
+// 為了維持 App.tsx 接口一致，將 fetchRealTimePrice 指向 FinMind 實作
+export const fetchRealTimePrice = fetchFinMindPrice;
 
 // 2. 獲取市場趨勢 (不變)
 const fetchMarketTrends = async (ai: GoogleGenAI): Promise<string> => {
@@ -121,18 +113,20 @@ const analyzePortfolioStrategy = async (ai: GoogleGenAI, marketInfo: string, por
 
 // --- 個股分析管線 ---
 
-// 3. 獲取輔助資訊 (新聞、基本面、昨收) - 作為第二來源
+// 3. 獲取輔助資訊 (Step 2: AI 分析)
 const fetchStockSupportingData = async (ai: GoogleGenAI, symbol: string, knownPrice: number): Promise<{ text: string, urls: string[] }> => {
-    // Prompt：已知現價，搜尋新聞與技術面
+    // Prompt 更新：明確指出已知現價，要求搜尋新聞與壓力支撐
     const prompt = `
       目標股票：${symbol}
-      基準現價：${knownPrice} (請以此價格為絕對基準進行分析，**不要**重新搜尋價格)
+      【已知權威現價】：${knownPrice} (此為 API 提供的精確價格，請以此為準)
       
-      任務：請搜尋以下「第二來源」資訊 (可搜尋新聞網站、Yahoo股市等)：
-      1. 【昨收】(Previous Close)：確認昨日收盤價。
+      任務：請作為專業分析師，搜尋 Web 上的「第二來源」資訊 (玩股網、Yahoo 股市、鉅亨網等)，重點分析以下項目：
+      1. 【昨收檢查】：驗證 ${knownPrice} 相對於昨日收盤的漲跌狀況 (若無確切昨收，可略過)。
       2. 【基本面】：最新 EPS 與 本益比 (PE)。
-      3. 【技術面】：根據基準現價 ${knownPrice}，搜尋相關新聞或分析，找出近期的「支撐位」與「壓力位」。
-      4. 【新聞】：一則最新影響該股波動的重大消息。
+      3. 【技術面壓力/支撐】：基於現價 ${knownPrice}，搜尋近期的技術分析文章或討論，找出上方的壓力位與下方的支撐位。
+      4. 【重大新聞】：一則最新影響該股波動的重大消息。
+
+      注意：**不要** 嘗試重新搜尋「現價」，因為搜尋結果可能會有延遲或錯誤，請直接信任並使用 ${knownPrice} 進行分析。
     `;
 
     try {
@@ -156,7 +150,7 @@ const fetchStockSupportingData = async (ai: GoogleGenAI, symbol: string, knownPr
 
 const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: string, confirmedPrice: number): Promise<any> => {
     const prompt = `
-      基準現價：${confirmedPrice} (這是權威數據，請直接使用)
+      基準現價：${confirmedPrice} (API 數據，不可更改)
       
       輔助來源數據：
       ${rawData}
@@ -202,24 +196,25 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
     }
 };
 
-// 4. 主流程：先查價(嚴格)，再分析(輔助)
+// 4. 主流程：先查價 (FinMind)，再分析 (AI)
 export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnalysis> => {
   try {
-    // Step 1: 獲取嚴格現價
-    const realTimePrice = await fetchRealTimePrice(symbol);
+    // Step 1: 獲取 FinMind 精確現價
+    const realTimePrice = await fetchFinMindPrice(symbol);
     
+    // 嚴格檢查：若 API 無法回傳數字，直接報錯，不進行估算
     if (realTimePrice === null || isNaN(realTimePrice)) {
-        throw new Error(`無法從玩股網 (Wantgoo) 取得 ${symbol} 的精確報價。為確保投資安全，系統拒絕估算。`);
+        throw new Error(`FinMind API 無法取得 ${symbol} 的報價。請確認代號正確或 API 配額。`);
     }
 
     const ai = getAiClient();
     
     // Step 2: 獲取輔助資訊
-    await sleep(1000); // 避免 Rate Limit
+    await sleep(500); 
     const supportingData = await fetchStockSupportingData(ai, symbol, realTimePrice);
     
     // Step 3: 整合報告
-    await sleep(500);
+    await sleep(200);
     const data = await transformDataToJson(ai, symbol, supportingData.text, realTimePrice);
 
     // 計算漲跌幅
