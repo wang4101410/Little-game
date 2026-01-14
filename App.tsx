@@ -79,6 +79,10 @@ const App: React.FC = () => {
   const [sellPrice, setSellPrice] = useState('');
   const [sellFee, setSellFee] = useState('');
 
+  // Polling State
+  // tickCount 用於控制輪詢節奏，每 10 秒 +1
+  const [tickCount, setTickCount] = useState(0);
+
   // --- EFFECTS ---
   useEffect(() => { localStorage.setItem('portfolio', JSON.stringify(portfolio)); }, [portfolio]);
   useEffect(() => { localStorage.setItem('watchlist', JSON.stringify(watchlist)); }, [watchlist]);
@@ -103,86 +107,119 @@ const App: React.FC = () => {
     }
   }, [sellPrice, sellShares, sellItem, settings.feeRate]);
 
-  // --- Price Polling Logic ---
-  const isPollingRef = useRef(false);
-
+  // --- Polling Scheduler (Clock) ---
+  // 負責每 10 秒推動一次時間軸
   useEffect(() => {
-    // 1. 檢查並更新市場狀態
-    const currentStatus = getMarketStatus();
-    setMarketStatus(currentStatus);
+      const status = getMarketStatus();
+      setMarketStatus(status);
 
-    // 2. 定義更新邏輯
-    const updatePrices = async () => {
-        // 防止重複執行
-        if (isPollingRef.current) return;
+      // 若在開盤時間，啟動計時器
+      if (status.isOpen) {
+          const intervalId = setInterval(() => {
+              setTickCount(prev => prev + 1);
+          }, 10000); // 10秒一個 Tick
+          return () => clearInterval(intervalId);
+      }
+      // 若休市，不啟動計時器 (或可在初始化時做一次性檢查)
+  }, []);
 
-        // 若市場關閉，但這是第一次執行(或手動觸發)，我們仍需獲取一次最後價格
-        // 但若是在 Loop 中，我們會再次檢查狀態
+  // --- Strict Update Logic (Responding to Tick) ---
+  useEffect(() => {
+    const status = getMarketStatus();
+    setMarketStatus(status);
+    
+    // 只有開盤時，或剛載入(tick=0)時才執行
+    if (!status.isOpen && tickCount > 0) return;
+
+    const allSymbols = Array.from(new Set([
+        ...portfolio.map(p => p.symbol),
+        ...watchlist.map(w => w.symbol)
+    ]));
+
+    if (allSymbols.length === 0) return;
+
+    // 演算法：每 10 支股票為一個群組，每個群組共享秒數。
+    // 即：第 0, 10, 20... 支股票在 Tick 0 更新
+    // 第 1, 11, 21... 支股票在 Tick 1 更新
+    // ...
+    // 第 9, 19, 29... 支股票在 Tick 9 更新
+    // 這樣保證了每 10 支股票的更新是錯開的 (10秒間隔)，符合「第1支完成後10秒換第2支」的時序要求。
+    
+    // 如果是第一次載入 (tickCount === 0)，我們可能希望快速獲取所有數據 (或是依然遵守規則)
+    // 為了使用者體驗，Tick 0 時我們可稍微放寬，或者嚴格遵守。
+    // 這裡我們嚴格遵守規則，但為了讓使用者第一次看到東西，我們可以讓 Tick 0 觸發全部 (但有風險)，
+    // 建議：嚴格遵守，使用者慢慢看到數據跳出來比較安全。
+    
+    const currentSlot = tickCount % 10;
+    
+    // 找出本輪需要更新的股票
+    const targets = allSymbols.filter((_, index) => index % 10 === currentSlot);
+    
+    if (targets.length > 0) {
+        console.log(`[Tick ${tickCount}] Slot ${currentSlot}: Updating ${targets.join(', ')}`);
         
-        isPollingRef.current = true;
+        targets.forEach(async (symbol) => {
+            if (loadingStates[symbol]) return;
 
+            try {
+                const newPrice = await fetchRealTimePrice(symbol);
+                if (newPrice !== null && newPrice > 0) {
+                    setAnalyses(prev => {
+                        const current = prev[symbol];
+                        if (!current) return prev; 
+                        
+                        const newChangePercent = current.prevClose > 0 
+                            ? ((newPrice - current.prevClose) / current.prevClose) * 100 
+                            : 0;
+
+                        return {
+                            ...prev,
+                            [symbol]: {
+                                ...current,
+                                currentPrice: newPrice,
+                                changePercent: newChangePercent,
+                                lastUpdated: Date.now()
+                            }
+                        };
+                    });
+                } else {
+                     // 可選：若回傳 null，表示找不到精確價格，這裡可以選擇是否要在 UI 顯示警告
+                     // 目前選擇保持上一次的價格，不因短暫失敗而清空
+                }
+            } catch (e) {
+                console.warn(`Polling failed for ${symbol}`);
+            }
+        });
+    }
+
+  }, [tickCount, portfolio, watchlist]); 
+  
+  // 為了確保「剛打開 App 即使休市也要有數據」，我們在 Mount 時執行一次全面掃描
+  // 這次掃描採用序列化執行 (慢速)，避免 API 限制
+  useEffect(() => {
+      const initialFetch = async () => {
         const allSymbols = Array.from(new Set([
             ...portfolio.map(p => p.symbol),
             ...watchlist.map(w => w.symbol)
         ]));
-
-        if (allSymbols.length === 0) {
-            isPollingRef.current = false;
-            return;
-        }
-
+        
+        // 慢速序列載入：每 2 秒載入一支
         for (const symbol of allSymbols) {
-            // 若該股票正在進行完整 AI 分析，則跳過即時價格更新，避免干擾
-            if (loadingStates[symbol]) continue;
-
-            const newPrice = await fetchRealTimePrice(symbol);
-            if (newPrice !== null && newPrice > 0) {
-                setAnalyses(prev => {
-                    const current = prev[symbol];
-                    if (!current) return prev; 
-                    
-                    const newChangePercent = current.prevClose > 0 
-                        ? ((newPrice - current.prevClose) / current.prevClose) * 100 
-                        : 0;
-
-                    return {
-                        ...prev,
-                        [symbol]: {
-                            ...current,
-                            currentPrice: newPrice,
-                            changePercent: newChangePercent,
-                            lastUpdated: Date.now()
-                        }
-                    };
-                });
-            }
-            // 輕微延遲避免 Rate Limit
-            await new Promise(r => setTimeout(r, 500));
+             if (!analyses[symbol] && !loadingStates[symbol]) {
+                 try {
+                     await handleAnalyze(symbol); // 使用完整分析 (含價格與新聞)
+                     await new Promise(r => setTimeout(r, 2000));
+                 } catch(e) { console.warn(e) }
+             }
         }
-        isPollingRef.current = false;
-    };
-
-    // 3. 立即執行一次 (滿足「關閉前請最後取得最新現價」以及「打開 APP 時即便休市也要有數據」的需求)
-    updatePrices();
-
-    // 4. 只有在市場「開盤中」時，才設定循環
-    if (currentStatus.isOpen) {
-        const intervalId = setInterval(() => {
-            // 每次 Loop 前再次檢查狀態，若轉為休市則會繼續執行完這次但不會有下一次(因為 Effect 依賴變了? 不，setInterval 閉包內的邏輯)
-            // 嚴謹起見，我們在 interval 內再次檢查
-            const checkStatus = getMarketStatus();
-            setMarketStatus(checkStatus);
-            
-            if (checkStatus.isOpen) {
-                updatePrices();
-            }
-        }, 10000); // 10 秒更新
-
-        return () => clearInterval(intervalId);
-    }
-    // 若休市，不設定 interval，即「結束搜尋」
-
-  }, [portfolio, watchlist, loadingStates]); 
+      };
+      
+      // 僅在沒有數據時觸發
+      const hasData = Object.keys(analyses).length > 0;
+      if (!hasData) {
+          initialFetch();
+      }
+  }, []); // Empty dependency = Mount only
 
 
   // --- ACTIONS ---
@@ -202,6 +239,8 @@ const App: React.FC = () => {
       console.error(error);
       if (error.message?.includes("429") || error.message?.includes("Resource has been exhausted")) {
          alert(`分析 ${symbol} 失敗：AI 請求過於頻繁 (429)。請稍等幾秒後再試。`);
+      } else if (error.message?.includes("無法從權威來源")) {
+         alert(`分析 ${symbol} 失敗：AI 無法在玩股網找到精確價格。為求安全，已終止分析。`);
       } else {
          console.warn(`分析 ${symbol} 失敗:`, error.message);
       }
@@ -323,7 +362,7 @@ const App: React.FC = () => {
       for (const symbol of allSymbols) {
           if (!loadingStates[symbol]) {
               await handleAnalyze(symbol);
-              await new Promise(resolve => setTimeout(resolve, 1500));
+              await new Promise(resolve => setTimeout(resolve, 2000)); // 增加間隔
           }
       }
   };
