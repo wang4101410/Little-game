@@ -404,6 +404,10 @@ const App: React.FC = () => {
   const unrealizedProfit = totalMarketValue - totalCostBasis;
   const isProfitable = unrealizedProfit >= 0;
 
+  // New: Calculate Total Realized Profit from transactions
+  const totalRealized = transactions.reduce((acc, t) => acc + t.realizedPl, 0);
+  const totalProfit = unrealizedProfit + totalRealized;
+
   return (
     <div className="min-h-screen pb-12 bg-brand-900 text-slate-200">
       {/* Navbar */}
@@ -497,13 +501,25 @@ const App: React.FC = () => {
                 </div>
             </div>
 
+            {/* Total Profit Card (Combined) */}
             <div className="bg-brand-800 rounded-xl p-4 border border-brand-700 shadow-lg">
-                 <h3 className="text-slate-400 text-xs font-medium uppercase tracking-wider">未實現損益</h3>
-                 <div className={`mt-1 text-2xl font-bold ${isProfitable ? 'text-green-400' : 'text-red-400'}`}>
-                    {isProfitable ? '+' : ''}NT${unrealizedProfit.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                 <h3 className="text-slate-400 text-xs font-medium uppercase tracking-wider">總損益 (含已實現)</h3>
+                 <div className={`mt-1 text-2xl font-bold ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {totalProfit >= 0 ? '+' : ''}NT${totalProfit.toLocaleString(undefined, {minimumFractionDigits: 2})}
                  </div>
-                 <div className="text-[10px] text-slate-500">
-                    {totalCostBasis > 0 ? ((unrealizedProfit / totalCostBasis) * 100).toFixed(2) : '0.00'}% 回報
+                 <div className="flex justify-between items-center mt-2 pt-2 border-t border-brand-700 text-[10px] text-slate-500">
+                     <div className="flex flex-col">
+                        <span>未實現</span>
+                        <span className={unrealizedProfit >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {unrealizedProfit >= 0 ? '+' : ''}{unrealizedProfit.toLocaleString(undefined, {maximumFractionDigits:0})}
+                        </span>
+                     </div>
+                     <div className="flex flex-col text-right">
+                        <span>已實現</span>
+                        <span className={totalRealized >= 0 ? 'text-green-400' : 'text-red-400'}>
+                             {totalRealized >= 0 ? '+' : ''}{totalRealized.toLocaleString(undefined, {maximumFractionDigits:0})}
+                        </span>
+                     </div>
                  </div>
             </div>
         </section>

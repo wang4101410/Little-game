@@ -39,7 +39,7 @@ const getAiClient = () => {
     process.env.REACT_APP_API_KEY;
   
   if (!apiKey) {
-    throw new Error("【設定錯誤】未偵測到 Google API Key。請在 .env 檔案中設定 VITE_API_KEY。");
+    throw new Error("【設定錯誤】未偵測到 Google API Key。請檢查您的環境變數 (VITE_API_KEY) 設定。");
   }
   return new GoogleGenAI({ apiKey });
 };
@@ -101,7 +101,7 @@ export const fetchFinMindPrice = async (symbol: string): Promise<number | null> 
 const fetchFinMindNews = async (symbol: string): Promise<string> => {
     try {
         const token = getFinMindToken();
-        if (!token) return "未設定 Token，無法取得新聞";
+        if (!token) return "未偵測到 Token (VITE_FINMIND_TOKEN)，無法取得新聞";
 
         // 抓取過去 30 天的新聞，確保有足夠資料量來判斷趨勢
         const date = new Date();
@@ -257,7 +257,7 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
     
     // 嚴格檢查：若 API 無法回傳數字，直接報錯，不進行估算
     if (realTimePrice === null || isNaN(realTimePrice)) {
-        throw new Error(`FinMind API 無法取得 ${symbol} 的報價。請確認 .env 設定正確。`);
+        throw new Error(`FinMind API 無法取得 ${symbol} 的報價。請確認環境變數 (VITE_FINMIND_TOKEN) 是否正確。`);
     }
 
     const ai = getAiClient();
