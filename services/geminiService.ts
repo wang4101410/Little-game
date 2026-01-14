@@ -39,23 +39,19 @@ const getAiClient = () => {
     process.env.REACT_APP_API_KEY;
   
   if (!apiKey) {
-    throw new Error("【設定錯誤】未偵測到 Google API Key。請檢查您的環境變數 (VITE_API_KEY) 設定。");
+    throw new Error("【設定錯誤】未偵測到 Google API Key。");
   }
   return new GoogleGenAI({ apiKey });
 };
 
-// 獲取 FinMind Token (從環境變數)
+// 獲取 FinMind Token
 const getFinMindToken = () => {
-  const token = 
-    (import.meta as any).env?.VITE_FINMIND_TOKEN || 
-    process.env.VITE_FINMIND_TOKEN ||
-    process.env.REACT_APP_FINMIND_TOKEN;
+  // 優先嘗試讀取環境變數，若讀不到則使用備用的寫死 Token (修復用戶問題)
+  const envToken = (import.meta as any).env?.VITE_FINMIND_TOKEN || process.env.VITE_FINMIND_TOKEN;
+  if (envToken) return envToken;
 
-  if (!token) {
-    console.warn("【設定警告】未偵測到 VITE_FINMIND_TOKEN 環境變數。FinMind API 呼叫可能會失敗。");
-    return "";
-  }
-  return token;
+  // Fallback Token (User provided)
+  return "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMS0xNCAwOTowNzoxOCIsInVzZXJfaWQiOiJhNDEwMTQxMCIsImVtYWlsIjoiYTQxMDE0MTBAZ21haWwuY29tIiwiaXAiOiIxMjUuMjI3LjE2Mi4yMTEifQ.fSiNBjlmL_UKHsz5pZH4ptjJUq7x8D4xF2x8ex51ksU";
 };
 
 // --- 原子功能 ---
@@ -101,8 +97,6 @@ export const fetchFinMindPrice = async (symbol: string): Promise<number | null> 
 const fetchFinMindNews = async (symbol: string): Promise<string> => {
     try {
         const token = getFinMindToken();
-        if (!token) return "未偵測到 Token (VITE_FINMIND_TOKEN)，無法取得新聞";
-
         // 抓取過去 30 天的新聞，確保有足夠資料量來判斷趨勢
         const date = new Date();
         date.setDate(date.getDate() - 30);
@@ -164,7 +158,6 @@ const fetchStockSupportingData = async (ai: GoogleGenAI, symbol: string, knownPr
     const finMindNews = await fetchFinMindNews(symbol);
 
     // 2. 構建 Prompt：要求 AI 基於已知價格 + FinMind 新聞進行分析
-    //    重點：利用新聞內容來推導情緒，進而結合現價推算壓力與支撐
     const prompt = `
       目標股票：${symbol}
       【權威現價】：${knownPrice} (API 實時數據，以此為準)
@@ -186,7 +179,7 @@ const fetchStockSupportingData = async (ai: GoogleGenAI, symbol: string, knownPr
         const response = await ai.models.generateContent({
             model: MODEL_NAME,
             contents: prompt,
-            config: { tools: [{ googleSearch: {} }] } // 仍開啟 Google Search 以補充 EPS/PE，但核心分析依賴 Prompt 中的新聞
+            config: { tools: [{ googleSearch: {} }] }
         });
 
         const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
@@ -241,7 +234,7 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
         const response = await ai.models.generateContent({
             model: MODEL_NAME,
             contents: prompt,
-            config: { } // 關閉 tools 以純文字推理
+            config: { }
         });
         return cleanAndParseJson(response.text);
     } catch (e) {
@@ -257,12 +250,12 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
     
     // 嚴格檢查：若 API 無法回傳數字，直接報錯，不進行估算
     if (realTimePrice === null || isNaN(realTimePrice)) {
-        throw new Error(`FinMind API 無法取得 ${symbol} 的報價。請確認環境變數 (VITE_FINMIND_TOKEN) 是否正確。`);
+        throw new Error(`FinMind API 無法取得 ${symbol} 的報價。請確認 Token 是否正確。`);
     }
 
     const ai = getAiClient();
     
-    // Step 2: 獲取輔助資訊 (這裡會內部呼叫 FinMind News 並整合進 Prompt)
+    // Step 2: 獲取輔助資訊
     await sleep(500); 
     const supportingData = await fetchStockSupportingData(ai, symbol, realTimePrice);
     
@@ -270,7 +263,6 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
     await sleep(200);
     const data = await transformDataToJson(ai, symbol, supportingData.text, realTimePrice);
 
-    // 計算漲跌幅
     const changePercent = data.prevClose > 0 
         ? ((data.currentPrice - data.prevClose) / data.prevClose) * 100 
         : 0;
@@ -281,7 +273,7 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
       marketCap: data.marketCap || 'N/A',
       eps: data.eps || 'N/A',
       pe: data.pe || 'N/A',
-      currentPrice: data.currentPrice, // 確保使用 Step 1 的價格
+      currentPrice: data.currentPrice,
       prevClose: data.prevClose || 0,
       changePercent: changePercent,
       volatility: data.volatility || 0.3,

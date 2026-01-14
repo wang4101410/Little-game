@@ -10,18 +10,16 @@ import { analyzeStockWithGemini, getOverallPortfolioAdvice, fetchRealTimePrice }
 // --- Helper: Check Taiwan Market Hours ---
 const getMarketStatus = () => {
     const now = new Date();
-    // 強制轉換為台北時間物件
     const taipeiTimeStr = now.toLocaleString("en-US", { timeZone: "Asia/Taipei" });
     const taipeiTime = new Date(taipeiTimeStr);
 
-    const day = taipeiTime.getDay(); // 0 is Sunday, 6 is Saturday
+    const day = taipeiTime.getDay();
     const hour = taipeiTime.getHours();
     const minute = taipeiTime.getMinutes();
     const currentMinutes = hour * 60 + minute;
 
-    // 台股交易時間: 09:00 ~ 13:30 (預留到 13:35 抓取收盤定價)
-    const START_MIN = 9 * 60;       // 09:00
-    const END_MIN = 13 * 60 + 35;   // 13:35
+    const START_MIN = 9 * 60;       
+    const END_MIN = 13 * 60 + 35;   
 
     const isWeekend = day === 0 || day === 6;
     const isTradingHours = currentMinutes >= START_MIN && currentMinutes <= END_MIN;
@@ -80,7 +78,6 @@ const App: React.FC = () => {
   const [sellFee, setSellFee] = useState('');
 
   // Polling State
-  // tickCount 用於控制輪詢節奏，每 10 秒 +1
   const [tickCount, setTickCount] = useState(0);
 
   // --- EFFECTS ---
@@ -89,7 +86,7 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('transactions', JSON.stringify(transactions)); }, [transactions]);
   useEffect(() => { localStorage.setItem('settings', JSON.stringify(settings)); }, [settings]);
 
-  // Auto calculate fee when price/shares change in Add Form
+  // Auto calculate fee
   useEffect(() => {
       if (newShares && newPrice && settings.feeRate) {
           const amount = parseFloat(newShares) * parseFloat(newPrice);
@@ -98,7 +95,6 @@ const App: React.FC = () => {
       }
   }, [newShares, newPrice, settings.feeRate]);
 
-  // Auto calculate fee when price/shares change in Sell Form
   useEffect(() => {
     if (sellItem && sellPrice && sellShares && settings.feeRate) {
         const amount = parseFloat(sellShares) * parseFloat(sellPrice);
@@ -108,19 +104,15 @@ const App: React.FC = () => {
   }, [sellPrice, sellShares, sellItem, settings.feeRate]);
 
   // --- Polling Scheduler (Clock) ---
-  // 負責每 10 秒推動一次時間軸
   useEffect(() => {
       const status = getMarketStatus();
       setMarketStatus(status);
-
-      // 若在開盤時間，啟動計時器
       if (status.isOpen) {
           const intervalId = setInterval(() => {
               setTickCount(prev => prev + 1);
-          }, 10000); // 10秒一個 Tick
+          }, 10000); 
           return () => clearInterval(intervalId);
       }
-      // 若休市，不啟動計時器 (或可在初始化時做一次性檢查)
   }, []);
 
   // --- Strict Update Logic (Responding to Tick) ---
@@ -128,7 +120,6 @@ const App: React.FC = () => {
     const status = getMarketStatus();
     setMarketStatus(status);
     
-    // 只有開盤時，或剛載入(tick=0)時才執行
     if (!status.isOpen && tickCount > 0) return;
 
     const allSymbols = Array.from(new Set([
@@ -138,35 +129,21 @@ const App: React.FC = () => {
 
     if (allSymbols.length === 0) return;
 
-    // 演算法：每 10 支股票為一個群組，每個群組共享秒數。
-    // 即：第 0, 10, 20... 支股票在 Tick 0 更新
-    // 第 1, 11, 21... 支股票在 Tick 1 更新
-    // ...
-    // 第 9, 19, 29... 支股票在 Tick 9 更新
-    // 這樣保證了每 10 支股票的更新是錯開的 (10秒間隔)，符合「第1支完成後10秒換第2支」的時序要求。
-    
     const currentSlot = tickCount % 10;
-    
-    // 找出本輪需要更新的股票
     const targets = allSymbols.filter((_, index) => index % 10 === currentSlot);
     
     if (targets.length > 0) {
-        console.log(`[Tick ${tickCount}] Slot ${currentSlot}: Updating ${targets.join(', ')}`);
-        
         targets.forEach(async (symbol) => {
             if (loadingStates[symbol]) return;
-
             try {
                 const newPrice = await fetchRealTimePrice(symbol);
                 if (newPrice !== null && newPrice > 0) {
                     setAnalyses(prev => {
                         const current = prev[symbol];
                         if (!current) return prev; 
-                        
                         const newChangePercent = current.prevClose > 0 
                             ? ((newPrice - current.prevClose) / current.prevClose) * 100 
                             : 0;
-
                         return {
                             ...prev,
                             [symbol]: {
@@ -177,19 +154,13 @@ const App: React.FC = () => {
                             }
                         };
                     });
-                } else {
-                     // FinMind 未回傳數據，保持原樣或顯示警告
                 }
-            } catch (e) {
-                console.warn(`Polling failed for ${symbol}`);
-            }
+            } catch (e) { console.warn(`Polling failed for ${symbol}`); }
         });
     }
-
   }, [tickCount, portfolio, watchlist]); 
   
-  // 為了確保「剛打開 App 即使休市也要有數據」，我們在 Mount 時執行一次全面掃描
-  // 這次掃描採用序列化執行 (慢速)，避免 API 限制
+  // Initial Fetch on Mount
   useEffect(() => {
       const initialFetch = async () => {
         const allSymbols = Array.from(new Set([
@@ -197,24 +168,21 @@ const App: React.FC = () => {
             ...watchlist.map(w => w.symbol)
         ]));
         
-        // 慢速序列載入：每 2 秒載入一支
         for (const symbol of allSymbols) {
              if (!analyses[symbol] && !loadingStates[symbol]) {
                  try {
-                     await handleAnalyze(symbol); // 使用完整分析 (含價格與新聞)
+                     await handleAnalyze(symbol); 
                      await new Promise(r => setTimeout(r, 2000));
                  } catch(e) { console.warn(e) }
              }
         }
       };
       
-      // 僅在沒有數據時觸發
       const hasData = Object.keys(analyses).length > 0;
       if (!hasData) {
           initialFetch();
       }
-  }, []); // Empty dependency = Mount only
-
+  }, []);
 
   // --- ACTIONS ---
 
@@ -225,7 +193,6 @@ const App: React.FC = () => {
       const analysis = await analyzeStockWithGemini(symbol);
       setAnalyses(prev => ({ ...prev, [symbol]: analysis }));
       
-      // 更新持倉名稱 (如果名稱有變)
       setPortfolio(prev => prev.map(p => 
         p.symbol === symbol ? { ...p, name: analysis.companyName } : p
       ));
@@ -233,10 +200,6 @@ const App: React.FC = () => {
       console.error(error);
       if (error.message?.includes("429")) {
          alert(`分析 ${symbol} 失敗：AI 請求過於頻繁 (429)。請稍等幾秒後再試。`);
-      } else if (error.message?.includes("FinMind API")) {
-         alert(`分析 ${symbol} 失敗：${error.message}`);
-      } else if (error.message?.includes("無法從權威來源")) {
-         alert(`分析 ${symbol} 失敗：無法取得精確現價，系統拒絕估算。`);
       } else {
          console.warn(`分析 ${symbol} 失敗:`, error.message);
       }
@@ -358,14 +321,13 @@ const App: React.FC = () => {
       for (const symbol of allSymbols) {
           if (!loadingStates[symbol]) {
               await handleAnalyze(symbol);
-              await new Promise(resolve => setTimeout(resolve, 2000)); // 增加間隔
+              await new Promise(resolve => setTimeout(resolve, 2000));
           }
       }
   };
 
   const handleGetPortfolioAdvice = async () => {
       if (isAdviceLoading) return;
-      
       setIsAdviceLoading(true);
       setAdviceStatusText("掃描市場..."); 
       setIsAdviceExpanded(true);
@@ -381,7 +343,6 @@ const App: React.FC = () => {
         });
 
         await new Promise(r => setTimeout(r, 500));
-        
         const advice = await getOverallPortfolioAdvice(itemsForAdvice, settings.cash);
         setAdviceStatusText("分析完成"); 
         setOverallAdvice(advice);
@@ -394,23 +355,39 @@ const App: React.FC = () => {
       }
   };
 
-  // Calculations
+  // --- Profit Calculations ---
+  // 1. Calculate Unrealized Profit (Floating P/L of current holdings)
+  // Only include items where we have successfully fetched a current price (> 0) to avoid showing massive losses during loading.
+  let validMarketValue = 0;
+  let validCostBasis = 0;
+
+  portfolio.forEach(item => {
+      const price = analyses[item.symbol]?.currentPrice || 0;
+      if (price > 0) {
+          validMarketValue += price * item.shares;
+          validCostBasis += item.avgCost * item.shares;
+      } else {
+          // If price is missing, we can assume cost basis for market value to show 0 profit, or exclude entirely.
+          // Excluding entirely is safer visually.
+      }
+  });
+  
+  const unrealizedProfit = validMarketValue - validCostBasis;
+  
+  // Total Market Value for display (including loading ones as 0 or last known)
   const totalMarketValue = portfolio.reduce((acc, item) => {
       const price = analyses[item.symbol]?.currentPrice || 0;
       return acc + (price * item.shares);
   }, 0);
-  
-  const totalCostBasis = portfolio.reduce((acc, item) => acc + (item.avgCost * item.shares), 0);
-  const unrealizedProfit = totalMarketValue - totalCostBasis;
-  const isProfitable = unrealizedProfit >= 0;
 
-  // New: Calculate Total Realized Profit from transactions
+  // 2. Realized Profit from History
   const totalRealized = transactions.reduce((acc, t) => acc + t.realizedPl, 0);
+  
+  // 3. Total Profit
   const totalProfit = unrealizedProfit + totalRealized;
 
   return (
     <div className="min-h-screen pb-12 bg-brand-900 text-slate-200">
-      {/* Navbar */}
       <nav className="border-b border-brand-800 bg-brand-900/90 backdrop-blur sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
@@ -422,7 +399,6 @@ const App: React.FC = () => {
                   <span className="text-xl font-bold tracking-tight text-white hidden md:block leading-none">
                       Portfo<span className="text-brand-400">Prophet</span>
                   </span>
-                  {/* Market Status Badge */}
                   <div className="flex items-center gap-1 mt-0.5">
                       <span className={`block w-2 h-2 rounded-full ${marketStatus.isOpen ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></span>
                       <span className="text-[10px] text-slate-400">{marketStatus.message}</span>
@@ -430,7 +406,6 @@ const App: React.FC = () => {
               </div>
             </div>
             
-            {/* Navigation Tabs */}
             <div className="flex bg-brand-800/50 rounded-lg p-1 gap-1">
                 <button 
                     onClick={() => setActiveTab('portfolio')}
@@ -501,21 +476,21 @@ const App: React.FC = () => {
                 </div>
             </div>
 
-            {/* Total Profit Card (Combined) */}
+            {/* Total Profit Card (New) */}
             <div className="bg-brand-800 rounded-xl p-4 border border-brand-700 shadow-lg">
-                 <h3 className="text-slate-400 text-xs font-medium uppercase tracking-wider">總損益 (含已實現)</h3>
+                 <h3 className="text-slate-400 text-xs font-medium uppercase tracking-wider">總損益 (Realized + Unrealized)</h3>
                  <div className={`mt-1 text-2xl font-bold ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {totalProfit >= 0 ? '+' : ''}NT${totalProfit.toLocaleString(undefined, {minimumFractionDigits: 2})}
                  </div>
                  <div className="flex justify-between items-center mt-2 pt-2 border-t border-brand-700 text-[10px] text-slate-500">
                      <div className="flex flex-col">
-                        <span>未實現</span>
+                        <span>未實現 (帳面)</span>
                         <span className={unrealizedProfit >= 0 ? 'text-green-400' : 'text-red-400'}>
                             {unrealizedProfit >= 0 ? '+' : ''}{unrealizedProfit.toLocaleString(undefined, {maximumFractionDigits:0})}
                         </span>
                      </div>
                      <div className="flex flex-col text-right">
-                        <span>已實現</span>
+                        <span>已實現 (歷史)</span>
                         <span className={totalRealized >= 0 ? 'text-green-400' : 'text-red-400'}>
                              {totalRealized >= 0 ? '+' : ''}{totalRealized.toLocaleString(undefined, {maximumFractionDigits:0})}
                         </span>
@@ -524,7 +499,6 @@ const App: React.FC = () => {
             </div>
         </section>
 
-        {/* Global Advice */}
         {overallAdvice && (
              <section className="mb-8 animate-fade-in">
                  <div className="bg-indigo-900/30 border border-indigo-500/30 rounded-xl overflow-hidden shadow-lg shadow-indigo-500/10">
@@ -578,7 +552,6 @@ const App: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Add Stock Form */}
                 {isAddFormOpen && (
                 <section className="mb-8 bg-brand-800 p-6 rounded-xl border border-brand-600 animate-slide-down">
                     <h3 className="text-lg font-bold mb-4">新增投資項目</h3>
@@ -637,7 +610,6 @@ const App: React.FC = () => {
                 </section>
                 )}
 
-                {/* Stock Grid */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     {portfolio.map(item => (
                         <StockCard 
