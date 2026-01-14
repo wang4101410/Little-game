@@ -3,8 +3,6 @@ import { StockAnalysis } from "../types";
 
 // 設定模型名稱
 const MODEL_NAME = "gemini-3-flash-preview";
-// FinMind API Token
-const FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wMS0xNCAwOTowNzoxOCIsInVzZXJfaWQiOiJhNDEwMTQxMCIsImVtYWlsIjoiYTQxMDE0MTBAZ21haWwuY29tIiwiaXAiOiIxMjUuMjI3LjE2Mi4yMTEifQ.fSiNBjlmL_UKHsz5pZH4ptjJUq7x8D4xF2x8ex51ksU";
 
 // 輔助函式：暫停 (Sleep)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -31,7 +29,7 @@ const cleanAndParseJson = (text: string) => {
   }
 };
 
-// 獲取 AI 客戶端
+// 獲取 AI 客戶端 (Google API Key)
 const getAiClient = () => {
   const apiKey = 
     (import.meta as any).env?.VITE_API_KEY || 
@@ -41,9 +39,23 @@ const getAiClient = () => {
     process.env.REACT_APP_API_KEY;
   
   if (!apiKey) {
-    throw new Error("【設定錯誤】未偵測到 API Key。");
+    throw new Error("【設定錯誤】未偵測到 Google API Key。請在 .env 檔案中設定 VITE_API_KEY。");
   }
   return new GoogleGenAI({ apiKey });
+};
+
+// 獲取 FinMind Token (從環境變數)
+const getFinMindToken = () => {
+  const token = 
+    (import.meta as any).env?.VITE_FINMIND_TOKEN || 
+    process.env.VITE_FINMIND_TOKEN ||
+    process.env.REACT_APP_FINMIND_TOKEN;
+
+  if (!token) {
+    console.warn("【設定警告】未偵測到 VITE_FINMIND_TOKEN 環境變數。FinMind API 呼叫可能會失敗。");
+    return "";
+  }
+  return token;
 };
 
 // --- 原子功能 ---
@@ -51,17 +63,18 @@ const getAiClient = () => {
 // 1. FinMind API 獲取即時(或最新收盤)價格
 export const fetchFinMindPrice = async (symbol: string): Promise<number | null> => {
     try {
+        const token = getFinMindToken();
         // 設定開始日期為 7 天前，確保跨週末或連假時能抓到最近的交易日數據
         const date = new Date();
         date.setDate(date.getDate() - 7);
         const startDate = date.toISOString().split('T')[0];
         
         // FinMind API URL (TaiwanStockPrice)
-        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${symbol}&start_date=${startDate}&token=${FINMIND_TOKEN}`;
+        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${symbol}&start_date=${startDate}&token=${token}`;
         
         const response = await fetch(url);
         if (!response.ok) {
-            console.warn(`FinMind API Error: ${response.status}`);
+            console.warn(`FinMind Price API Error: ${response.status}`);
             return null;
         }
         
@@ -79,8 +92,40 @@ export const fetchFinMindPrice = async (symbol: string): Promise<number | null> 
         }
         return null;
     } catch (e) {
-        console.error("FinMind API Exception:", e);
+        console.error("FinMind Price API Exception:", e);
         return null;
+    }
+};
+
+// 1.5 FinMind API 獲取相關新聞 (用於第二階段分析)
+const fetchFinMindNews = async (symbol: string): Promise<string> => {
+    try {
+        const token = getFinMindToken();
+        if (!token) return "未設定 Token，無法取得新聞";
+
+        // 抓取過去 30 天的新聞，確保有足夠資料量來判斷趨勢
+        const date = new Date();
+        date.setDate(date.getDate() - 30);
+        const startDate = date.toISOString().split('T')[0];
+
+        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockNews&data_id=${symbol}&start_date=${startDate}&token=${token}`;
+
+        const response = await fetch(url);
+        if (!response.ok) return "FinMind 新聞 API 連線失敗";
+
+        const json = await response.json();
+        
+        if (json.msg === "success" && Array.isArray(json.data) && json.data.length > 0) {
+            // 取最新的 5-8 則新聞摘要，包含日期與標題
+            const newsItems = json.data.reverse().slice(0, 8).map((item: any) => {
+                return `• [${item.date}] ${item.title}`;
+            });
+            return newsItems.join("\n");
+        }
+        return "FinMind 資料庫中近期無該股新聞。";
+    } catch (e) {
+        console.warn("FinMind News API Exception:", e);
+        return "取得新聞發生錯誤";
     }
 };
 
@@ -113,27 +158,35 @@ const analyzePortfolioStrategy = async (ai: GoogleGenAI, marketInfo: string, por
 
 // --- 個股分析管線 ---
 
-// 3. 獲取輔助資訊 (Step 2: AI 分析)
+// 3. 獲取輔助資訊 (Step 2: AI 分析 - 結合 FinMind 新聞)
 const fetchStockSupportingData = async (ai: GoogleGenAI, symbol: string, knownPrice: number): Promise<{ text: string, urls: string[] }> => {
-    // Prompt 更新：明確指出已知現價，要求搜尋新聞與壓力支撐
+    // 1. 先從 FinMind 取得新聞資料 (這是權威的第一手消息來源)
+    const finMindNews = await fetchFinMindNews(symbol);
+
+    // 2. 構建 Prompt：要求 AI 基於已知價格 + FinMind 新聞進行分析
+    //    重點：利用新聞內容來推導情緒，進而結合現價推算壓力與支撐
     const prompt = `
       目標股票：${symbol}
-      【已知權威現價】：${knownPrice} (此為 API 提供的精確價格，請以此為準)
+      【權威現價】：${knownPrice} (API 實時數據，以此為準)
       
-      任務：請作為專業分析師，搜尋 Web 上的「第二來源」資訊 (玩股網、Yahoo 股市、鉅亨網等)，重點分析以下項目：
-      1. 【昨收檢查】：驗證 ${knownPrice} 相對於昨日收盤的漲跌狀況 (若無確切昨收，可略過)。
-      2. 【基本面】：最新 EPS 與 本益比 (PE)。
-      3. 【技術面壓力/支撐】：基於現價 ${knownPrice}，搜尋近期的技術分析文章或討論，找出上方的壓力位與下方的支撐位。
-      4. 【重大新聞】：一則最新影響該股波動的重大消息。
+      【FinMind 提供的近期新聞彙整】：
+      ${finMindNews}
+      
+      任務：請作為專業技術分析師，進行以下分析：
+      1. 【新聞情緒解讀】：分析上述 FinMind 新聞是利多、利空還是中性？市場對此的反應可能為何？
+      2. 【技術面推演】：**請嚴格根據「已知現價 ${knownPrice}」以及「新聞隱含的市場情緒」，推算出短期的「支撐位」與「壓力位」。** (例如：若新聞利多，支撐位可能上移至現價附近；若利空，壓力位可能在現價上方不遠處)。
+      3. 【基本面補充】：請利用 Google Search 搜尋該股最新的 EPS 與 本益比 (PE) 數據。
 
-      注意：**不要** 嘗試重新搜尋「現價」，因為搜尋結果可能會有延遲或錯誤，請直接信任並使用 ${knownPrice} 進行分析。
+      注意：
+      - 不要重新搜尋股價。
+      - 支撐與壓力位的推論邏輯必須與新聞情緒一致。
     `;
 
     try {
         const response = await ai.models.generateContent({
             model: MODEL_NAME,
             contents: prompt,
-            config: { tools: [{ googleSearch: {} }] }
+            config: { tools: [{ googleSearch: {} }] } // 仍開啟 Google Search 以補充 EPS/PE，但核心分析依賴 Prompt 中的新聞
         });
 
         const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
@@ -152,7 +205,7 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
     const prompt = `
       基準現價：${confirmedPrice} (API 數據，不可更改)
       
-      輔助來源數據：
+      輔助來源數據 (含 FinMind 新聞分析)：
       ${rawData}
 
       任務：將數據整合為 JSON。
@@ -160,8 +213,8 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
       規則：
       1. currentPrice 必須等於 ${confirmedPrice}。
       2. prevClose 請從輔助數據中提取，若找不到請填 0。
-      3. aiPrediction.keyLevels 請根據新聞與技術面分析，推導出支撐與壓力區間。
-      4. volatility 請根據新聞波動程度估算 (0.2 ~ 0.8)。
+      3. aiPrediction.keyLevels 請填寫從新聞分析中推導出的「支撐位」與「壓力位」具體數值與簡短理由。
+      4. volatility 請根據新聞的波動程度與情緒強度估算 (0.2 ~ 0.8)。
       
       JSON 結構 (純 JSON):
       {
@@ -177,7 +230,7 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
         "aiPrediction": {
              "trendAnalysis": "string",
              "volatilityAnalysis": "string",
-             "keyLevels": "string (格式: 支撐 xxx / 壓力 xxx)",
+             "keyLevels": "string (格式: 支撐 xxx / 壓力 xxx，含簡短理由)",
              "scenarios": { "optimistic": "string", "neutral": "string", "pessimistic": "string" },
              "conclusion": "string"
         }
@@ -196,7 +249,7 @@ const transformDataToJson = async (ai: GoogleGenAI, symbol: string, rawData: str
     }
 };
 
-// 4. 主流程：先查價 (FinMind)，再分析 (AI)
+// 4. 主流程：先查價 (FinMind)，再查新聞 (FinMind)，最後分析 (AI)
 export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnalysis> => {
   try {
     // Step 1: 獲取 FinMind 精確現價
@@ -204,12 +257,12 @@ export const analyzeStockWithGemini = async (symbol: string): Promise<StockAnaly
     
     // 嚴格檢查：若 API 無法回傳數字，直接報錯，不進行估算
     if (realTimePrice === null || isNaN(realTimePrice)) {
-        throw new Error(`FinMind API 無法取得 ${symbol} 的報價。請確認代號正確或 API 配額。`);
+        throw new Error(`FinMind API 無法取得 ${symbol} 的報價。請確認 .env 設定正確。`);
     }
 
     const ai = getAiClient();
     
-    // Step 2: 獲取輔助資訊
+    // Step 2: 獲取輔助資訊 (這裡會內部呼叫 FinMind News 並整合進 Prompt)
     await sleep(500); 
     const supportingData = await fetchStockSupportingData(ai, symbol, realTimePrice);
     
